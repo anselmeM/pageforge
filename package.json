@@ -1,0 +1,23 @@
+{
+  "name": "pageforge",
+  "productName": "PageForge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local comic-book reader for CBZ/ZIP archives and image folders.",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/main/main.cjs",
+  "scripts": {
+    "start": "node scripts/launch.mjs",
+    "test": "node --test \"test/*.test.js\"",
+    "fixture": "node scripts/make-fixture.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "npm test && npm run smoke"
+  },
+  "dependencies": {
+    "yauzl": "^3.4.0"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0"
+  }
+}

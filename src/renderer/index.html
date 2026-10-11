@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src pageforge:; connect-src 'self';"
+    />
+    <title>PageForge</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="stage">
+      <div id="spread"></div>
+      <div id="zones">
+        <div class="zone" data-zone="previous" title="Previous page"></div>
+        <div class="zone" data-zone="next" title="Next page"></div>
+      </div>
+      <p id="empty-state">
+        <strong>PageForge</strong>
+        <span>Open a CBZ/ZIP comic or a folder of images.</span>
+        <span class="hint">Drop a file here, or press <kbd>Ctrl</kbd>+<kbd>O</kbd></span>
+      </p>
+    </div>
+
+    <header id="toolbar">
+      <button type="button" data-command="open-file">Open</button>
+      <button type="button" data-command="open-folder">Folder</button>
+      <span class="divider"></span>
+      <button type="button" data-command="first-page" title="First page">|&#8592;</button>
+      <button type="button" data-command="previous-page" title="Previous page">&#8592;</button>
+      <button type="button" data-command="next-page" title="Next page">&#8594;</button>
+      <button type="button" data-command="last-page" title="Last page">&#8594;|</button>
+      <span class="divider"></span>
+      <button type="button" data-command="zoom-out" title="Zoom out">&#8722;</button>
+      <button type="button" data-command="zoom-reset" title="Actual size">100%</button>
+      <button type="button" data-command="zoom-in" title="Zoom in">+</button>
+      <button type="button" data-command="fit-screen" title="Fit to screen">Fit</button>
+      <span class="divider"></span>
+      <button type="button" data-command="rotate-ccw" title="Rotate left">&#8630;</button>
+      <button type="button" data-command="rotate-cw" title="Rotate right">&#8631;</button>
+      <button type="button" data-command="toggle-double" title="Double page">2&#8203;up</button>
+      <button type="button" data-command="toggle-rtl" title="Japanese reading (right to left)">RTL</button>
+      <span class="spacer"></span>
+      <button type="button" data-command="toggle-fullscreen" title="Full screen">&#9974;</button>
+      <button type="button" data-command="show-help" title="Keyboard shortcuts">?</button>
+    </header>
+
+    <footer id="statusbar">
+      <span id="page-label">No book open</span>
+      <span id="book-label"></span>
+      <span class="spacer"></span>
+      <span id="mode-label"></span>
+      <span id="zoom-label"></span>
+    </footer>
+
+    <dialog id="goto-dialog">
+      <form method="dialog">
+        <h2>Go to page</h2>
+        <input id="goto-input" type="number" min="1" step="1" autocomplete="off" />
+        <p class="dialog-actions">
+          <button type="button" id="goto-cancel">Cancel</button>
+          <button type="submit" id="goto-confirm">Go</button>
+        </p>
+      </form>
+    </dialog>
+
+    <dialog id="help-dialog">
+      <h2>Keyboard shortcuts</h2>
+      <dl>
+        <dt><kbd>&#8594;</kbd> <kbd>Space</kbd> <kbd>Page&#8202;Down</kbd></dt><dd>Next page</dd>
+        <dt><kbd>&#8592;</kbd> <kbd>Page&#8202;Up</kbd></dt><dd>Previous page</dd>
+        <dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>First / last page</dd>
+        <dt><kbd>Ctrl</kbd>+<kbd>G</kbd></dt><dd>Go to page</dd>
+        <dt><kbd>+</kbd> <kbd>&#8722;</kbd></dt><dd>Zoom in / out</dd>
+        <dt><kbd>0</kbd></dt><dd>Actual size (100%)</dd>
+        <dt><kbd>F</kbd> <kbd>W</kbd> <kbd>H</kbd></dt><dd>Fit screen / width / height</dd>
+        <dt><kbd>D</kbd></dt><dd>Toggle double page</dd>
+        <dt><kbd>J</kbd></dt><dd>Toggle Japanese (right-to-left) reading</dd>
+        <dt><kbd>R</kbd> <kbd>Shift</kbd>+<kbd>R</kbd></dt><dd>Rotate right / left</dd>
+        <dt><kbd>F11</kbd></dt><dd>Full screen</dd>
+      </dl>
+      <p class="dialog-actions"><button type="button" id="help-close">Close</button></p>
+    </dialog>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

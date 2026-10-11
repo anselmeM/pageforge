@@ -1,0 +1,268 @@
+/* PageForge viewer styling.
+   The reading area is deliberately dark and chrome-light: the page is the
+   subject, and the toolbar and status bar only occupy space when not in
+   full screen. */
+
+:root {
+  --chrome: #1b1b22;
+  --chrome-border: #2c2c36;
+  --text: #e8e8ee;
+  --muted: #9a9aa8;
+  --accent: #6ea8fe;
+  --reading-background: #101014;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--reading-background);
+  color: var(--text);
+  font: 13px/1.4 "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+}
+
+body {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
+/* Toolbar ------------------------------------------------------------------ */
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--chrome-border);
+}
+
+#toolbar button {
+  min-width: 30px;
+  padding: 4px 9px;
+  color: var(--text);
+  background: #24242d;
+  border: 1px solid var(--chrome-border);
+  border-radius: 5px;
+  font: inherit;
+  cursor: pointer;
+}
+
+#toolbar button:hover {
+  background: #2f2f3a;
+}
+
+#toolbar button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#toolbar .divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--chrome-border);
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* Reading area ------------------------------------------------------------- */
+
+#stage {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+#spread {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  will-change: transform;
+}
+
+.page {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.page img {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: block;
+  max-width: none;
+  transform-origin: center center;
+  box-shadow: 0 0 24px rgb(0 0 0 / 55%);
+}
+
+#empty-state {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  text-align: center;
+}
+
+#empty-state strong {
+  font-size: 22px;
+  color: var(--text);
+}
+
+#empty-state[hidden] {
+  display: none;
+}
+
+#empty-state .hint {
+  font-size: 12px;
+}
+
+kbd {
+  padding: 1px 5px;
+  background: #24242d;
+  border: 1px solid var(--chrome-border);
+  border-radius: 4px;
+  font: 11px/1.4 Consolas, monospace;
+}
+
+/* Page-turn click zones ---------------------------------------------------- */
+
+#zones {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  pointer-events: none;
+}
+
+#zones .zone {
+  flex: 1;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+#zones .zone:hover {
+  background: rgb(110 168 254 / 5%);
+}
+
+/* Status bar --------------------------------------------------------------- */
+
+#statusbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 10px;
+  background: var(--chrome);
+  border-top: 1px solid var(--chrome-border);
+  color: var(--muted);
+}
+
+#page-label {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+#zoom-label,
+#mode-label {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dialogs and toast -------------------------------------------------------- */
+
+dialog {
+  padding: 18px 20px;
+  color: var(--text);
+  background: #1f1f28;
+  border: 1px solid var(--chrome-border);
+  border-radius: 8px;
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 55%);
+}
+
+dialog h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+dialog dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+dialog dt {
+  white-space: nowrap;
+}
+
+dialog dd {
+  margin: 0;
+  color: var(--muted);
+}
+
+#goto-input {
+  width: 100%;
+  padding: 6px 8px;
+  color: var(--text);
+  background: #14141a;
+  border: 1px solid var(--chrome-border);
+  border-radius: 5px;
+  font: inherit;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 14px 0 0;
+}
+
+.dialog-actions button {
+  padding: 5px 12px;
+  color: var(--text);
+  background: #24242d;
+  border: 1px solid var(--chrome-border);
+  border-radius: 5px;
+  font: inherit;
+  cursor: pointer;
+}
+
+#toast {
+  position: fixed;
+  bottom: 46px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 70%;
+  padding: 8px 14px;
+  background: #33262a;
+  border: 1px solid #6b3a44;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 160ms ease;
+  pointer-events: none;
+}
+
+#toast.visible {
+  opacity: 1;
+}
+
+/* Full screen hides the chrome entirely. */
+body.fullscreen #toolbar {
+  display: none;
+}
