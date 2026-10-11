@@ -8,7 +8,7 @@ CDisplayEx 1.10.33 (its release notes, its translation catalog, and its installe
 file inventory on this machine). It shares no code, assets, or branding with
 that product, and it does not read or modify CDisplayEx's files.
 
-## Status: milestone 3 — library and resume
+## Status: milestone 4 — reading quality
 
 Working today:
 
@@ -29,10 +29,41 @@ Working today:
 - **Resumes** each book at the page it was left on, remembers a **recent list**,
   and keeps **named bookmarks** per book
 - **Thumbnail strip** with lazy per-page previews that jumps to any page
+- **Colour correction** (off, estimated per page, or manual gamma and colour boost),
+  **scaling quality** (nearest, linear, high quality), and pages **decoded ahead**
+  of the reader
 
 Not implemented yet (deliberately deferred): CBT/TAR archives, DjVu and TIFF/AVIF
-decoding, colour correction, resampling choices, page cache tuning, configurable
-keyboard shortcuts, portable configuration.
+decoding, a true Lanczos kernel, perceptual vibrance, configurable keyboard
+shortcuts, portable configuration.
+
+## Reading quality
+
+Colour handling is a declarative SVG filter (`feComponentTransfer` plus
+`feColorMatrix`), so it applies identically to page images and to PDF canvases and
+costs nothing to change. Three modes:
+
+- **Off** — pages are shown as stored.
+- **Automatic** — the page is drawn into a 64×64 canvas, its channel averages are
+  measured, and a grey-world white balance is derived from them. The strength
+  setting blends between no correction and the full estimate.
+- **Manual** — gamma and colour boost by hand.
+
+Reading a page's pixels back requires the canvas not to be tainted, which is why
+page bytes are served from the viewer's own origin rather than from a separate
+host.
+
+Two deliberate limits, because naming something after an algorithm it does not use
+would be worse than leaving it out:
+
+- **Colour boost is a saturation matrix**, not perceptual vibrance; a linear colour
+  matrix cannot express the latter.
+- **"High quality" scaling is the browser's high-quality downscale** through a
+  canvas, not a Lanczos kernel.
+
+Neighbouring pages are decoded ahead of the reader (four by default, configurable,
+`0` disables it) so turning a page does not wait on the disk. PDF pages are skipped
+there: pdf.js caches them itself, and rendering ahead would spend CPU for nothing.
 
 ## Library and resume
 
@@ -102,6 +133,7 @@ the situation and explains it rather than crashing obscurely.
 | `Ctrl`+`G` | Go to page |
 | `Ctrl`+`B` | Bookmarks for this book (add, jump, delete) |
 | `Ctrl`+`T` | Show or hide the thumbnail strip |
+| `Ctrl`+`,` | Reading quality settings |
 | `Ctrl`+`R` | Recent books |
 | `+` / `−` | Zoom in / out |
 | `0` | Actual size (100%) |
@@ -141,9 +173,9 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 71 unit, store and reader tests
-npm run smoke   # launches Electron against CBZ, CB7, CBR and PDF fixtures,
-                # then reopens a book to prove resume and bookmarks survive
+npm test        # 88 unit, store, colour and reader tests
+npm run smoke   # launches Electron against CBZ, CB7, CBR and PDF fixtures, then
+                # proves resume, bookmarks, white balance and scaling quality
 npm run verify  # both
 ```
 
@@ -179,4 +211,8 @@ says what it does not know:
 | Keyboard shortcuts and click zones | **Chosen** for this app; CDisplayEx's bindings were not inspected |
 | Resume, recent list, named bookmarks, thumbnail strip | **Observed** features in CDisplayEx (its translation catalog lists "Resume", "Open Recent", "Bookmarks", "Add", "Delete", "Show thumbnails") |
 | Books keyed by absolute path rather than by content digest | **Chosen** limitation; a moved or renamed book is treated as new |
+| Automatic colour correction, gamma, colour boost, scaling quality, page cache | **Observed** options in CDisplayEx's catalog ("Automatic color correction", "Gamma", "Vibrance", "Lanczos (better quality)", "Linear", "Nearest (faster)", "Cache pages") |
+| Colour boost implemented as a saturation matrix | **Chosen approximation**; a linear colour matrix cannot express perceptual vibrance |
+| "High quality" scaling, not a Lanczos kernel | **Chosen** and labelled accordingly rather than misnamed |
+| Prefetch depth defaulting to four pages | **Chosen**; CDisplayEx makes cache size a setting too |
 | CBT/TAR, DjVu | **Not implemented yet**; CDisplayEx supports both |

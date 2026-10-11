@@ -10,6 +10,19 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <!-- Colour handling is a declarative SVG filter so it applies identically
+         to page images and to PDF canvases. -->
+    <svg class="filter-defs" aria-hidden="true">
+      <filter id="pf-color" color-interpolation-filters="sRGB">
+        <feComponentTransfer>
+          <feFuncR type="gamma" amplitude="1" exponent="1" offset="0" />
+          <feFuncG type="gamma" amplitude="1" exponent="1" offset="0" />
+          <feFuncB type="gamma" amplitude="1" exponent="1" offset="0" />
+        </feComponentTransfer>
+        <feColorMatrix id="pf-saturation" type="saturate" values="1" />
+      </filter>
+    </svg>
+
     <div id="stage">
       <div id="spread"></div>
       <div id="zones">
@@ -47,6 +60,7 @@
       <button type="button" data-command="add-bookmark" title="Add bookmark (Ctrl+B)">&#9873;</button>
       <button type="button" data-command="show-bookmarks" title="Bookmarks">&#9776;</button>
       <button type="button" data-command="show-recent" title="Recent books">&#8635;</button>
+      <button type="button" data-command="show-preferences" title="Reading quality (Ctrl+,)">&#9881;</button>
       <span class="spacer"></span>
       <button type="button" data-command="toggle-fullscreen" title="Full screen">&#9974;</button>
       <button type="button" data-command="show-help" title="Keyboard shortcuts">?</button>
@@ -81,6 +95,55 @@
       <p class="dialog-actions">
         <button type="button" id="recent-clear">Clear history</button>
         <button type="button" id="recent-close">Close</button>
+      </p>
+    </dialog>
+
+    <dialog id="preferences-dialog">
+      <h2>Reading quality</h2>
+      <div class="pref-rows">
+        <div class="pref-row">
+          <label for="pref-color-mode">Colour correction</label>
+          <select id="pref-color-mode">
+            <option value="off">Off</option>
+            <option value="auto">Automatic (per page)</option>
+            <option value="manual">Manual settings</option>
+          </select>
+        </div>
+        <div class="pref-row">
+          <label for="pref-sensitivity">White balance strength</label>
+          <input id="pref-sensitivity" type="range" min="0" max="1" step="0.05" />
+          <output id="pref-sensitivity-value"></output>
+        </div>
+        <div class="pref-row">
+          <label for="pref-gamma">Gamma</label>
+          <input id="pref-gamma" type="range" min="0.3" max="3" step="0.05" />
+          <output id="pref-gamma-value"></output>
+        </div>
+        <div class="pref-row">
+          <label for="pref-vibrance">Colour boost</label>
+          <input id="pref-vibrance" type="range" min="0" max="1" step="0.05" />
+          <output id="pref-vibrance-value"></output>
+        </div>
+        <div class="pref-row">
+          <label for="pref-resampling">Scaling quality</label>
+          <select id="pref-resampling">
+            <option value="nearest">Nearest (fastest)</option>
+            <option value="linear">Linear</option>
+            <option value="high">High quality (slower)</option>
+          </select>
+        </div>
+        <div class="pref-row">
+          <label for="pref-prefetch">Pages decoded ahead</label>
+          <input id="pref-prefetch" type="number" min="0" max="16" step="1" />
+        </div>
+      </div>
+      <p class="dialog-note">
+        Automatic colour correction estimates a white balance from each page. Colour boost is a
+        saturation adjustment, not a perceptual vibrance curve.
+      </p>
+      <p class="dialog-actions">
+        <button type="button" id="pref-reset">Reset to defaults</button>
+        <button type="button" id="pref-close">Close</button>
       </p>
     </dialog>
 

@@ -169,6 +169,37 @@ try {
   } catch (error) {
     failures.push(`REOPEN: ${error.message}`);
   }
+
+  /* Reading quality: colour correction and high-quality scaling. */
+  process.stdout.write("smoke: checking colour correction and scaling quality\n");
+  try {
+    const { createStore } = await import("../src/main/store.js");
+    const store = await createStore({ directory: stateDirectory });
+    await store.setPreference("colorMode", "auto");
+    await store.setPreference("colorSensitivity", 1);
+    await store.setPreference("resampling", "high");
+    await store.flush();
+
+    const result = await runElectron([".", "--smoke", fixture.cast], { env });
+    const report = parseReport(result.stdout);
+    if (report === null) {
+      throw new Error(`no report for the colour case (exit=${result.code})\n${result.stdout}\n${result.stderr}`);
+    }
+    assert.equal(report.smoke, "ok", `app reported ${JSON.stringify(report)}`);
+    assert.equal(report.colorMode, "auto");
+    // The fixture page is a warm 200/150/120 wash, so grey-world white balance
+    // must pull red down and push blue up.
+    assert.ok(report.colorGains.r < 0.95, `expected red to be reduced, got ${report.colorGains.r}`);
+    assert.ok(report.colorGains.b > 1.05, `expected blue to be raised, got ${report.colorGains.b}`);
+    assert.ok(Math.abs(report.colorGains.g - 1) < 0.1, `green should barely move, got ${report.colorGains.g}`);
+    // High-quality scaling means the page is drawn through a canvas.
+    assert.deepEqual(report.nodeKinds, ["resample"], "expected the page to be resampled through a canvas");
+    process.stdout.write(
+      `smoke: QUALITY OK — white balance r=${report.colorGains.r.toFixed(3)} g=${report.colorGains.g.toFixed(3)} b=${report.colorGains.b.toFixed(3)}, page drawn via ${report.nodeKinds[0]}\n`,
+    );
+  } catch (error) {
+    failures.push(`QUALITY: ${error.message}`);
+  }
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {

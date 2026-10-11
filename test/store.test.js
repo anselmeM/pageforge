@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import { createStore } from "../src/main/store.js";
+import { DEFAULT_PREFERENCES } from "../src/core/library.js";
 
 let workspace = null;
 const directoryFor = async (name) => {
@@ -32,7 +33,7 @@ describe("store", () => {
     const store = await createStore({ directory: await directoryFor("empty") });
     assert.equal(store.loadProblem, null);
     assert.deepEqual(store.history(), []);
-    assert.deepEqual(store.preferences(), { resumeLastPage: true, showThumbnails: false });
+    assert.deepEqual(store.preferences(), DEFAULT_PREFERENCES);
   });
 
   it("remembers an opened book and its reading position", async () => {
@@ -99,13 +100,15 @@ describe("store", () => {
     assert.deepEqual(store.bookmarks(BOOK), []);
   });
 
-  it("only accepts known preferences", async () => {
+  it("only accepts known preferences with usable values", async () => {
     const store = await createStore({ directory: await directoryFor("prefs") });
     assert.deepEqual(await store.setPreference("showThumbnails", true), {
-      resumeLastPage: true,
+      ...DEFAULT_PREFERENCES,
       showThumbnails: true,
     });
+    assert.equal((await store.setPreference("gamma", 99)).gamma, 3, "out-of-range numbers are clamped");
     await assert.rejects(() => store.setPreference("somethingElse", true), /Unknown preference/);
+    await assert.rejects(() => store.setPreference("resampling", "bicubic"), /Invalid value/);    await assert.rejects(() => store.setPreference("resumeLastPage", "yes"), /Invalid value/);
   });
 
   it("preserves a corrupt library instead of discarding it", async () => {

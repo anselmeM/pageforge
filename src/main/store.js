@@ -15,6 +15,8 @@ import { join } from "node:path";
 import {
   DEFAULT_PREFERENCES,
   bookmarksFor,
+  coercePreference,
+  normalizePreferences,
   normalizePathKey,
   pruneBookmarks,
   upsertHistory,
@@ -34,11 +36,7 @@ const sanitize = (value) => {
   const library = emptyLibrary();
   if (value === null || typeof value !== "object") return library;
   if (value.preferences !== null && typeof value.preferences === "object") {
-    for (const key of Object.keys(DEFAULT_PREFERENCES)) {
-      if (typeof value.preferences[key] === typeof DEFAULT_PREFERENCES[key]) {
-        library.preferences[key] = value.preferences[key];
-      }
-    }
+    library.preferences = normalizePreferences(value.preferences);
   }
   if (Array.isArray(value.history)) {
     library.history = value.history.filter(
@@ -189,7 +187,11 @@ export const createStore = async ({ directory }) => {
 
     async setPreference(key, value) {
       if (!(key in DEFAULT_PREFERENCES)) throw new Error(`Unknown preference: ${key}`);
-      library.preferences[key] = value;
+      const coerced = coercePreference(key, value);
+      if (coerced === undefined) {
+        throw new Error(`Invalid value for preference ${key}: ${JSON.stringify(value)}`);
+      }
+      library.preferences[key] = coerced;
       await persist();
       return { ...library.preferences };
     },

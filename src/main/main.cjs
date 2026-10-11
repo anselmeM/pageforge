@@ -125,7 +125,9 @@ const bookPayload = (opened) => ({
     height: page.height,
     format: page.format,
     bytes: page.bytes,
-    url: `pageforge://page/${index}`,
+    // Served from the viewer's own origin: page bytes are drawn into a canvas
+    // to estimate white balance, and a cross-origin image would taint it.
+    url: `pageforge://app/page/${index}`,
   })),
 });
 
@@ -252,6 +254,8 @@ const buildMenu = (preferences) =>
         { label: "Open Folder…", accelerator: "CmdOrCtrl+Shift+O", click: () => send("app:command", "open-folder") },
         { type: "separator" },
         { label: "Close Book", accelerator: "CmdOrCtrl+W", click: () => send("app:command", "close-book") },
+        { type: "separator" },
+        { label: "Reading Quality…", accelerator: "CmdOrCtrl+,", click: () => send("app:command", "show-preferences") },
         { type: "separator" },
         { label: "Exit", accelerator: "CmdOrCtrl+Q", role: "quit" },
       ],
@@ -400,6 +404,30 @@ const handleProtocol = () => {
         }
       }
 
+      // Page bytes live on this origin too, for the reason given in bookPayload.
+      if (requested.startsWith("page/")) {
+        const index = Number(requested.slice("page/".length));
+        if (!Number.isInteger(index) || index < 0) return new Response("Bad page index", { status: 400 });
+        if (session === null) return new Response("No book is open", { status: 404 });
+        const page = session.pages[index];
+        if (page === undefined) return new Response("Page out of range", { status: 404 });
+        try {
+          const { mimeForPage } = await reader();
+          const bytes = await session.readPage(index);
+          return new Response(bytes, {
+            status: 200,
+            headers: {
+              "content-type": mimeForPage(page),
+              "content-length": String(bytes.length),
+              // Re-reading a page should not mean re-reading the archive.
+              "cache-control": "private, max-age=300",
+            },
+          });
+        } catch (error) {
+          return new Response(`Page could not be read: ${error.message}`, { status: 500 });
+        }
+      }
+
       const vendored = requested.startsWith(VENDOR_PREFIX);
       const root = vendored ? vendorRoot : appRoot;
       const absolute = resolve(root, vendored ? requested.slice(VENDOR_PREFIX.length) : requested);
@@ -421,26 +449,8 @@ const handleProtocol = () => {
       }
     }
 
-    if (url.hostname !== "page") return new Response("Unknown PageForge resource", { status: 404 });
-    const index = Number(url.pathname.replace(/^\//u, ""));
-    if (!Number.isInteger(index) || index < 0) return new Response("Bad page index", { status: 400 });
-    if (session === null) return new Response("No book is open", { status: 404 });
-    const page = session.pages[index];
-    if (page === undefined) return new Response("Page out of range", { status: 404 });
-    try {
-      const { mimeForPage } = await reader();
-      const bytes = await session.readPage(index);
-      return new Response(bytes, {
-        status: 200,
-        headers: {
-          "content-type": mimeForPage(page),
-          "content-length": String(bytes.length),
-          "cache-control": "no-store",
-        },
-      });
-    } catch (error) {
-      return new Response(`Page could not be read: ${error.message}`, { status: 500 });
-    }
+    // Everything the viewer loads lives on one origin.
+    return new Response(`Unknown PageForge resource: ${url.hostname}`, { status: 404 });
   });
 };
 

@@ -15,6 +15,61 @@ export const DEFAULT_PREFERENCES = {
   resumeLastPage: true,
   /** Show the page thumbnail strip. */
   showThumbnails: false,
+  /** Colour handling: off, estimated from each page, or the manual settings. */
+  colorMode: "off",
+  /** How strongly an estimated white balance is applied, 0 to 1. */
+  colorSensitivity: 1,
+  /** Gamma applied to every channel. */
+  gamma: 1,
+  /** Saturation boost, 0 to 1. */
+  vibrance: 0,
+  /** How pages are scaled down to the window. */
+  resampling: "linear",  /** Neighbouring pages decoded ahead of the reader; 0 disables prefetching. */
+  prefetchPages: 4,
+};
+
+/**
+ * Accepted values for each preference. Used both when loading a file that may
+ * have been edited by hand and when a caller sets a value, so there is one
+ * definition of what a preference may be.
+ */
+export const PREFERENCE_RULES = {
+  resumeLastPage: { type: "boolean" },
+  showThumbnails: { type: "boolean" },
+  colorMode: { type: "enum", values: ["off", "auto", "manual"] },
+  colorSensitivity: { type: "number", min: 0, max: 1 },
+  gamma: { type: "number", min: 0.3, max: 3 },
+  vibrance: { type: "number", min: 0, max: 1 },
+  // "high" is the browser's high-quality downscale. It is not a Lanczos kernel,
+  // so it is not named after one.
+  resampling: { type: "enum", values: ["nearest", "linear", "high"] },
+  prefetchPages: { type: "number", min: 0, max: 16, integer: true },
+};
+
+/**
+ * Coerce one preference value, or return undefined when it is unusable.
+ * Numbers are clamped to their range and enums must be a known value, so a
+ * hand-edited library file cannot put the reader into an invalid state.
+ */
+export const coercePreference = (key, value) => {
+  const rule = PREFERENCE_RULES[key];
+  if (rule === undefined) return undefined;
+  if (rule.type === "boolean") return typeof value === "boolean" ? value : undefined;
+  if (rule.type === "enum") return rule.values.includes(value) ? value : undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const clamped = Math.min(rule.max, Math.max(rule.min, value));
+  return rule.integer === true ? Math.round(clamped) : clamped;
+};
+
+/** Defaults with every usable value from `value` layered on top. */
+export const normalizePreferences = (value) => {
+  const preferences = { ...DEFAULT_PREFERENCES };
+  if (value === null || typeof value !== "object") return preferences;
+  for (const key of Object.keys(DEFAULT_PREFERENCES)) {
+    const coerced = coercePreference(key, value[key]);
+    if (coerced !== undefined) preferences[key] = coerced;
+  }
+  return preferences;
 };
 
 /**

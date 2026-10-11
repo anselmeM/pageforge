@@ -270,6 +270,12 @@ export const FIXTURE_PDF_PAGES = [
   { width: 792, height: 612, colour: [60, 60, 220] },
 ];
 
+/**
+ * A single page with a strong warm cast, for checking that automatic white
+ * balance actually moves the channels back toward neutral.
+ */
+export const CAST_PAGE = { name: "page01.png", width: 600, height: 900, colour: [200, 150, 120] };
+
 const FIXTURE_ENTRIES = [
   ...FIXTURE_PAGES.map((page) => ({
     name: page.name,
@@ -300,11 +306,17 @@ export const writeFixture = async (directory) => {
   const pdf = join(directory, "sample.pdf");
   await writeFile(pdf, pdfBytes(FIXTURE_PDF_PAGES));
 
+  const cast = join(directory, "cast.cbz");
+  await writeFile(
+    cast,
+    zipBytes([{ name: CAST_PAGE.name, data: pngBytes(CAST_PAGE.width, CAST_PAGE.height, CAST_PAGE.colour) }]),
+  );
+
   const rarBytesResult = await rarBytes(FIXTURE_ENTRIES);
   const rar = rarBytesResult === null ? null : join(directory, "sample.cbr");
   if (rar !== null) await writeFile(rar, rarBytesResult);
 
-  return { archive, folder: join(directory, "folder"), sevenZip, rar, pdf };
+  return { archive, folder: join(directory, "folder"), sevenZip, rar, pdf, cast };
 };
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

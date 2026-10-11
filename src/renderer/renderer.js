@@ -6,6 +6,7 @@
  * be tested without a window; this file only translates that state into DOM.
  */
 
+import { IDENTITY_GAINS, averageChannelMeans, colorFilterParameters, computeWhiteBalanceGains } from "../core/color.js";
 import { clampScale, fitScale, zoomStep } from "../core/fit.js";
 import { DEFAULT_PREFERENCES, describeHistoryEntry, resolveStartPage } from "../core/library.js";
 import { buildSpreads, spreadIndexForPage, visualOrder } from "../core/spread.js";
@@ -31,12 +32,34 @@ const bookmarkName = document.getElementById("bookmark-name");
 const bookmarksDialog = document.getElementById("bookmarks-dialog");
 const recentList = document.getElementById("recent-list");
 const recentDialog = document.getElementById("recent-dialog");
+const preferencesDialog = document.getElementById("preferences-dialog");
+const prefColorMode = document.getElementById("pref-color-mode");
+const prefSensitivity = document.getElementById("pref-sensitivity");
+const prefGamma = document.getElementById("pref-gamma");
+const prefVibrance = document.getElementById("pref-vibrance");
+const prefResampling = document.getElementById("pref-resampling");
+const prefPrefetch = document.getElementById("pref-prefetch");
+/** The three per-channel transfer functions inside the colour filter. */
+const colorCurves = {
+  r: document.querySelector("#pf-color feFuncR"),
+  g: document.querySelector("#pf-color feFuncG"),
+  b: document.querySelector("#pf-color feFuncB"),
+};
+const saturationMatrix = document.getElementById("pf-saturation");
 
 /** Fallback size for pages whose header could not be parsed. */
 const UNKNOWN_PAGE_SIZE = { width: 1000, height: 1500 };
 
 /** Set once the command-line startup command has been applied. */
 let startupCommandApplied = false;
+
+/**
+ * Every apply gets a token, and only the newest one is allowed to finish its
+ * work. Startup can deliver the same book twice (the push from the main process
+ * and the getBook() call race), and interleaved applies would otherwise fight
+ * over the DOM and report readiness twice.
+ */
+let applyToken = 0;
 
 const state = {
   book: null,
@@ -59,6 +82,12 @@ const state = {
   history: [],
   bookmarks: [],
   thumbnailsVisible: false,
+  /** White balance currently applied to the spread. */
+  colorGains: { ...IDENTITY_GAINS },
+  /** Per-page white balance results, so scrolling back does not resample. */
+  colorGainsByPage: new Map(),
+  /** Page URLs already decoded ahead of the reader. */
+  prefetched: new Set(),
 };
 
 /* Sizing ------------------------------------------------------------------- */
@@ -138,45 +167,145 @@ const layoutSpread = () => {
     node.element.style.transform = `translate(-50%, -50%) rotate(${state.rotation}deg)`;
   }
   spreadEl.style.transform = `translate(${state.offset.x}px, ${state.offset.y}px)`;
-  schedulePdfRenders();
+  scheduleCanvasRenders();
+  sampleSpreadColor();
   updateStatus();
 };
 
 /**
- * Render PDF canvases at a resolution that matches what is on screen, and again
- * when zooming makes the current bitmap too coarse. Archives need none of this:
- * their images are decoded by Chromium at display resolution.
+ * PDF pages and high-quality resampling both go through a canvas, rendered at a
+ * resolution that matches what is on screen and re-rendered when zooming makes
+ * the current bitmap too coarse. Ordinary image pages need none of this:
+ * Chromium decodes them at display resolution itself.
  */
-const schedulePdfRenders = () => {
-  if (state.pdf === null) return;
+const scheduleCanvasRenders = () => {
+  if (state.book === null) return;
   for (const node of state.nodes) {
-    if (node.kind !== "pdf") continue;
+    if (node.kind === "image") continue;
+    if (node.kind === "pdf" && state.pdf === null) continue;
     const resolution = Math.min(3, Math.max(1, (window.devicePixelRatio || 1) * state.scale));
     const previous = node.renderedScale;
     if (previous > 0 && Math.abs(resolution - previous) / previous <= 0.25) continue;
-    void renderPdfNode(node, resolution);
+    void renderCanvasNode(node, resolution);
   }
 };
 
-const renderPdfNode = async (node, resolution) => {
+const renderCanvasNode = async (node, resolution) => {
   node.currentTask?.cancel?.();
   const token = Symbol("render");
   node.renderToken = token;
   try {
-    const { task, scale } = await startPdfRender(state.pdf, node.page.index, node.element, resolution);
-    if (node.renderToken !== token) {
-      task.cancel();
-      return;
+    if (node.kind === "pdf") {
+      const { task, scale } = await startPdfRender(state.pdf, node.page.index, node.element, resolution);
+      if (node.renderToken !== token) {
+        task.cancel();
+        return;
+      }
+      node.currentTask = task;
+      await task.promise;
+      if (node.renderToken === token) node.renderedScale = scale;
+    } else {
+      // High-quality resampling: draw the decoded page into a canvas at the
+      // resolution it will be shown at, using the browser's best downscale.
+      const source = node.source;
+      if (source === undefined || !source.complete || source.naturalWidth === 0) return;
+      const base = pageSize(node.page);
+      const width = Math.max(1, Math.round(base.width * resolution));
+      const height = Math.max(1, Math.round(base.height * resolution));
+      node.element.width = width;
+      node.element.height = height;
+      const context = node.element.getContext("2d", { alpha: false });
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(source, 0, 0, width, height);
+      if (node.renderToken === token) node.renderedScale = resolution;
     }
-    node.currentTask = task;
-    await task.promise;
-    if (node.renderToken === token) node.renderedScale = scale;
+    if (state.nodes[0] === node) sampleSpreadColor();
   } catch (error) {
     // A cancelled render is expected whenever the user moves on quickly.
     if (node.renderToken === token && error?.name !== "RenderingCancelledException") {
       toast(`Page ${node.page.index + 1} could not be rendered.`);
     }
   }
+};
+
+/* Colour handling ---------------------------------------------------------- */
+
+/** Push the current settings into the SVG filter and attach it to the spread. */
+const applyColorFilter = () => {
+  const parameters = colorFilterParameters(state.preferences, state.colorGains);
+  for (const curve of Object.values(colorCurves)) {
+    curve.setAttribute("exponent", String(parameters.exponent));
+  }
+  colorCurves.r.setAttribute("amplitude", String(parameters.r));
+  colorCurves.g.setAttribute("amplitude", String(parameters.g));
+  colorCurves.b.setAttribute("amplitude", String(parameters.b));
+  saturationMatrix.setAttribute("values", String(parameters.saturation));
+  spreadEl.style.filter = parameters.active ? "url(#pf-color)" : "";
+};
+
+const colorSampleCanvas = document.createElement("canvas");
+colorSampleCanvas.width = 64;
+colorSampleCanvas.height = 64;
+const colorSampleContext = colorSampleCanvas.getContext("2d", { willReadFrequently: true });
+
+/**
+ * Estimate a white balance from the first page of the spread.
+ *
+ * Drawing a page into a small canvas and reading it back requires the page to
+ * be same-origin, which is why page bytes are served from the viewer's own
+ * origin. A page that cannot be sampled is left uncorrected.
+ */
+const sampleSpreadColor = () => {
+  if (state.preferences.colorMode !== "auto") return;
+  const node = state.nodes[0];
+  if (node === undefined) return;
+  const cached = state.colorGainsByPage.get(node.page.index);
+  if (cached !== undefined) {
+    state.colorGains = cached;
+    applyColorFilter();
+    return;
+  }
+  const source = node.element;
+  const ready =
+    node.kind === "image"
+      ? source.complete && source.naturalWidth > 0
+      : node.renderedScale > 0 && source.width > 0;
+  if (!ready) return;
+  try {
+    colorSampleContext.clearRect(0, 0, 64, 64);
+    colorSampleContext.drawImage(source, 0, 0, 64, 64);
+    const means = averageChannelMeans(colorSampleContext.getImageData(0, 0, 64, 64).data);
+    if (means === null) return;
+    const gains = computeWhiteBalanceGains(means, state.preferences.colorSensitivity);
+    state.colorGainsByPage.set(node.page.index, gains);
+    state.colorGains = gains;
+    applyColorFilter();
+  } catch {
+    /* An unsampleable page stays uncorrected rather than failing the render. */
+  }
+};
+
+/** Decode pages near the reader so turning a page does not wait on the disk. */
+const prefetchAround = () => {
+  const limit = state.preferences.prefetchPages ?? 0;
+  if (limit <= 0 || state.book === null) return;
+  for (let offset = 1; offset <= limit; offset += 1) {
+    for (const index of [state.spreadIndex + offset, state.spreadIndex - offset]) {
+      const spread = state.spreads[index];
+      if (spread === undefined) continue;
+      for (const pageIndex of spread.indices) {
+        const page = state.book.pages[pageIndex];
+        // PDF pages are cached by pdf.js itself; rendering ahead would cost CPU.
+        if (page === undefined || page.kind === "pdf" || state.prefetched.has(page.url)) continue;
+        state.prefetched.add(page.url);
+        const image = new Image();
+        image.src = page.url;
+      }
+    }
+  }
+  // Keep the remembered set bounded on a long book.
+  if (state.prefetched.size > 96) state.prefetched.clear();
 };
 
 /** A page whose header was unreadable reports its real size once decoded. */
@@ -198,28 +327,46 @@ const renderSpread = () => {
     updateStatus();
     return;
   }
+  const resampling = state.preferences.resampling ?? "linear";
   for (const pageIndex of visualOrder(spread, state.rightToLeft)) {
     const page = state.book.pages[pageIndex];
     const wrapper = document.createElement("div");
     wrapper.className = "page";
-    const isPdf = page.kind === "pdf";
-    const element = isPdf ? document.createElement("canvas") : document.createElement("img");
-    if (isPdf) {
+
+    // A PDF page always needs a canvas. A page image only does when the reader
+    // asked for high-quality downscaling; otherwise Chromium decodes it better
+    // and more cheaply than we can.
+    const asCanvas = page.kind === "pdf" || resampling === "high";
+    const element = asCanvas ? document.createElement("canvas") : document.createElement("img");
+    let source;
+    if (page.kind === "pdf") {
       element.className = "page-canvas";
+    } else if (asCanvas) {
+      element.className = "page-canvas";
+      source = new Image();
+      source.addEventListener("load", () => scheduleCanvasRenders());
+      source.addEventListener("error", () => toast(`Could not display ${page.name}`));
+      source.src = page.url;
     } else {
       element.src = page.url;
       element.alt = page.name;
       element.draggable = false;
-      element.addEventListener("load", () => learnDimensions(page, element));
+      if (resampling === "nearest") element.classList.add("pixelated");
+      element.addEventListener("load", () => {
+        learnDimensions(page, element);
+        sampleSpreadColor();
+      });
       element.addEventListener("error", () => toast(`Could not display ${page.name}`));
     }
+
     wrapper.append(element);
     spreadEl.append(wrapper);
     state.nodes.push({
       page,
       wrapper,
       element,
-      kind: isPdf ? "pdf" : "image",
+      source,
+      kind: page.kind === "pdf" ? "pdf" : asCanvas ? "resample" : "image",
       renderedScale: 0,
       renderToken: null,
       currentTask: null,
@@ -289,18 +436,25 @@ const reportReady = async () => {
     bookmarkCount: state.bookmarks.length,
     historyCount: state.history.length,
     thumbnails: thumbnailsEl.hidden ? 0 : thumbnailsEl.querySelectorAll(".thumb").length,
+    // Reading-quality facts, so the colour and scaling paths are assertable.
+    colorMode: state.preferences.colorMode,
+    colorGains: { ...state.colorGains },
+    nodeKinds: state.nodes.map((node) => node.kind),
   });
 };
 
 const applyBook = async (book) => {
+  const token = (applyToken += 1);
   state.pdf = null;
   state.preferences = book.preferences ?? state.preferences;
   if (book.kind === "pdf") {
     try {
       const { document: pdfDocument, pages } = await openPdfDocument(book.documentUrl);
+      if (token !== applyToken) return;
       state.pdf = pdfDocument;
       state.book = { ...book, pages };
     } catch (error) {
+      if (token !== applyToken) return;
       const message = error instanceof Error ? error.message : String(error);
       toast(`This PDF could not be opened: ${message}`);
       api.reportError({ code: "document-unreadable", message });
@@ -312,12 +466,18 @@ const applyBook = async (book) => {
   state.spreadIndex = 0;
   state.offset = { x: 0, y: 0 };
   state.rotation = 0;
+  state.colorGains = { ...IDENTITY_GAINS };
+  state.colorGainsByPage.clear();
+  state.prefetched.clear();
   rebuildSpreads();
   renderSpread();
   applyFit();
+  applyColorFilter();
+  prefetchAround();
 
   // Pick up this book's bookmarks, then resume where the reader left off.
   await refreshLibrary();
+  if (token !== applyToken) return;
 
   const start = resolveStartPage(
     { lastPage: book.resumePage },
@@ -337,9 +497,20 @@ const applyBook = async (book) => {
   if (!startupCommandApplied) {
     startupCommandApplied = true;
     const command = await api.getStartupCommand();
+    if (token !== applyToken) return;
     if (command !== null && command !== undefined) await runCommand(command);
   }
+  if (token !== applyToken) return;
   void reportReady();
+};
+
+/** Apply a book from an event, surfacing a failure instead of losing it. */
+const applyBookSafely = (book) => {
+  applyBook(book).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    toast(`Could not open ${book.displayName}: ${message}`);
+    api.reportError({ code: "apply-failed", message });
+  });
 };
 
 /* Library: preferences, thumbnails, bookmarks, recents ---------------------- */
@@ -348,6 +519,8 @@ const applyPreferences = () => {
   state.thumbnailsVisible = state.preferences.showThumbnails === true;
   thumbnailsEl.hidden = !state.thumbnailsVisible;
   if (state.thumbnailsVisible) buildThumbnails();
+  applyColorFilter();
+  syncPreferenceControls();
   syncToolbar();
 };
 
@@ -527,6 +700,80 @@ const addBookmarkAtCurrentPage = async () => {
   toast(`Bookmark added on page ${page}`);
 };
 
+/* Reading quality preferences ---------------------------------------------- */
+
+const showPreferenceValues = () => {
+  document.getElementById("pref-sensitivity-value").textContent = Number(prefSensitivity.value).toFixed(2);
+  document.getElementById("pref-gamma-value").textContent = Number(prefGamma.value).toFixed(2);
+  document.getElementById("pref-vibrance-value").textContent = Number(prefVibrance.value).toFixed(2);
+};
+
+const syncPreferenceControls = () => {
+  const preferences = state.preferences;
+  prefColorMode.value = preferences.colorMode;
+  prefSensitivity.value = String(preferences.colorSensitivity);
+  prefGamma.value = String(preferences.gamma);
+  prefVibrance.value = String(preferences.vibrance);
+  prefResampling.value = preferences.resampling;
+  prefPrefetch.value = String(preferences.prefetchPages);
+  showPreferenceValues();
+};
+
+/**
+ * Persist one preference and apply its consequences. Changing the scaling mode
+ * rebuilds the spread, because it decides whether pages are images or canvases.
+ */
+const writePreference = async (key, value) => {
+  const preferences = await api.setPreference(key, value);
+  if (preferences === null || typeof preferences !== "object") return;
+  const resamplingChanged = preferences.resampling !== state.preferences.resampling;
+  state.preferences = preferences;
+  syncPreferenceControls();
+  applyColorFilter();
+
+  if (key === "colorMode" || key === "colorSensitivity") state.colorGainsByPage.clear();
+  if (key === "prefetchPages") {
+    state.prefetched.clear();
+    prefetchAround();
+  }
+  if (resamplingChanged && state.book !== null) {
+    renderSpread();
+    if (state.fitMode === "manual") layoutSpread();
+    else applyFit();
+  }
+  if (key === "colorMode" || key === "colorSensitivity") sampleSpreadColor();
+};
+
+const wirePreferences = () => {
+  prefColorMode.addEventListener("change", () => void writePreference("colorMode", prefColorMode.value));
+  prefResampling.addEventListener("change", () => void writePreference("resampling", prefResampling.value));
+  prefPrefetch.addEventListener("change", () =>
+    void writePreference("prefetchPages", Number(prefPrefetch.value)),
+  );
+  for (const [element, key] of [
+    [prefSensitivity, "colorSensitivity"],
+    [prefGamma, "gamma"],
+    [prefVibrance, "vibrance"],
+  ]) {
+    element.addEventListener("input", () => showPreferenceValues());
+    element.addEventListener("change", () => void writePreference(key, Number(element.value)));
+  }
+  document.getElementById("pref-close").addEventListener("click", () => preferencesDialog.close());
+  document.getElementById("pref-reset").addEventListener("click", async () => {
+    for (const [key, value] of Object.entries(DEFAULT_PREFERENCES)) {
+      await writePreference(key, value);
+    }
+    state.colorGainsByPage.clear();
+    state.prefetched.clear();
+    if (state.book !== null) {
+      renderSpread();
+      applyFit();
+      prefetchAround();
+    }
+    toast("Reading quality reset to defaults");
+  });
+};
+
 /* Navigation --------------------------------------------------------------- */
 
 const goToSpread = (index) => {
@@ -537,6 +784,7 @@ const goToSpread = (index) => {
   if (state.fitMode === "manual") layoutSpread();
   else applyFit();
   updateThumbnailHighlight();
+  prefetchAround();
   reportProgress();
 };
 
@@ -745,6 +993,10 @@ const runCommand = async (command) => {
       return;
     case "show-recent":
       void openRecentDialog();
+      return;
+    case "show-preferences":
+      syncPreferenceControls();
+      preferencesDialog.showModal();
       return;
     case "clear-history":
       void api.clearHistory().then(() => refreshLibrary());
@@ -976,12 +1228,13 @@ const init = async () => {
   wirePointer();
   wireZones();
   wireDialogs();
+  wirePreferences();
   wireToolbar();
   wireDrop();
   wireResize();
 
   api.onCommand(runCommand);
-  api.on("app:book-opened", (book) => void applyBook(book));
+  api.on("app:book-opened", (book) => applyBookSafely(book));
   api.on("app:book-failed", (error) => {
     toast(error.message);
     api.reportError(error);
@@ -996,7 +1249,6 @@ const init = async () => {
 
   const book = await api.getBook();
   if (book !== null) await applyBook(book);
-
   try {
     document.body.classList.toggle("fullscreen", Boolean(await api.isFullscreen()));
   } catch {
