@@ -12,8 +12,8 @@
  * shim instead. The reader stays an ES module and is loaded with `import()`.
  */
 
-const { readFile, writeFile } = require("node:fs/promises");
-const { extname, isAbsolute, join, relative, resolve } = require("node:path");
+const { readFile, stat, writeFile } = require("node:fs/promises");
+const { basename, extname, isAbsolute, join, relative, resolve } = require("node:path");
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell } = require("electron");
 
@@ -36,10 +36,23 @@ const appRoot = resolve(here, "..");
 const STATIC_MIME = new Map([
   [".html", "text/html; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"],
   [".css", "text/css; charset=utf-8"],
   [".json", "application/json; charset=utf-8"],
+  [".map", "application/json; charset=utf-8"],
+  [".wasm", "application/wasm"],
   [".svg", "image/svg+xml"],
 ]);
+
+/**
+ * Vendored browser assets (pdf.js) are served under the same origin as the
+ * viewer, because a cross-origin ES-module import would need CORS headers that
+ * a custom scheme does not negotiate.
+ */
+const VENDOR_PREFIX = "vendor/";
+const vendorRoot = resolve(appRoot, "..", "node_modules");
+
+const PDF_EXTENSIONS = new Set([".pdf"]);
 
 /** The reader is an ES module, loaded once on first use. */
 let readerModule = null;
@@ -56,8 +69,9 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-/** The single open source for this window. */
+/** The single open source for this window, and the open PDF when there is one. */
 let session = null;
+let documentPath = null;
 let mainWindow = null;
 
 const isSmokeRun = process.argv.includes("--smoke");
@@ -106,14 +120,35 @@ const bookPayload = (opened) => ({
 });
 
 const closeSession = async () => {
+  documentPath = null;
   if (session === null) return;
   const closing = session;
   session = null;
   await closing.close();
 };
 
+/**
+ * A PDF is not read here: the viewer loads it with pdf.js. The main process only
+ * checks that it is a readable file and serves its bytes to that origin.
+ */
+const loadDocument = async (targetPath) => {
+  const info = await stat(targetPath);
+  if (!info.isFile()) {
+    throw Object.assign(new Error("Only files can be opened."), { code: "unsupported-target" });
+  }
+  documentPath = targetPath;
+  return {
+    kind: "pdf",
+    targetPath,
+    displayName: basename(targetPath),
+    documentUrl: "pageforge://app/document",
+    pages: [],
+  };
+};
+
 const loadTarget = async (targetPath) => {
   await closeSession();
+  if (PDF_EXTENSIONS.has(extname(targetPath).toLowerCase())) return loadDocument(targetPath);
   const { openTarget } = await reader();
   const opened = await openTarget(targetPath);
   session = opened;
@@ -134,7 +169,7 @@ const openWithDialog = async (kind) => {
       kind === "folder"
         ? []
         : [
-            { name: "Comic archives", extensions: ["cbz", "zip", "zipx"] },
+            { name: "Comics and documents", extensions: ["cbz", "zip", "zipx", "cbr", "rar", "cb7", "7z", "pdf"] },
             { name: "All files", extensions: ["*"] },
           ],
   });
@@ -276,8 +311,31 @@ const handleProtocol = () => {
 
     if (url.hostname === "app") {
       const requested = decodeURIComponent(url.pathname).replace(/^\/+/u, "");
-      const absolute = resolve(appRoot, requested);
-      const withinRoot = relative(appRoot, absolute);
+
+      // The open PDF is served from this origin rather than its own host: a
+      // cross-origin fetch would need CORS headers that a custom scheme does
+      // not negotiate, and pdf.js fetches the document URL directly.
+      if (requested === "document") {
+        if (documentPath === null) return new Response("No document is open", { status: 404 });
+        try {
+          const bytes = await readFile(documentPath);
+          return new Response(bytes, {
+            status: 200,
+            headers: {
+              "content-type": "application/pdf",
+              "content-length": String(bytes.length),
+              "cache-control": "no-store",
+            },
+          });
+        } catch (error) {
+          return new Response(`Document could not be read: ${error.message}`, { status: 500 });
+        }
+      }
+
+      const vendored = requested.startsWith(VENDOR_PREFIX);
+      const root = vendored ? vendorRoot : appRoot;
+      const absolute = resolve(root, vendored ? requested.slice(VENDOR_PREFIX.length) : requested);
+      const withinRoot = relative(root, absolute);
       if (withinRoot.startsWith("..") || isAbsolute(withinRoot)) {
         return new Response("Forbidden", { status: 403 });
       }

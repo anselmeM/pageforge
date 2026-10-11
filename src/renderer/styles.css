@@ -96,7 +96,8 @@ body {
   flex: 0 0 auto;
 }
 
-.page img {
+.page img,
+.page canvas {
   position: absolute;
   top: 50%;
   left: 50%;

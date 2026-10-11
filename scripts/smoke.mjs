@@ -1,10 +1,11 @@
 /**
  * End-to-end smoke test.
  *
- * Builds the fixture, launches the real Electron app against it, and asserts
- * that the window reported a loaded book and a decoded first page. This is the
- * only check that exercises the page protocol, the preload bridge and the
- * viewer together, so it is what proves the app actually runs.
+ * Builds every fixture, launches the real Electron app against each format, and
+ * asserts that the window reported a loaded book and a decoded first page. This
+ * is the only check that exercises the main process, the page and document
+ * protocols, the preload bridge and the viewer together, so it is what proves
+ * the app actually runs.
  */
 
 import assert from "node:assert/strict";
@@ -21,7 +22,7 @@ const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const electronPath = require("electron");
 
-const runElectron = (args, timeoutMs = 60_000) =>
+const runElectron = (args, timeoutMs = 90_000) =>
   new Promise((resolve) => {
     // See scripts/launch.mjs: an inherited ELECTRON_RUN_AS_NODE would start
     // Electron as plain Node, where the electron module has no API.
@@ -63,38 +64,75 @@ const parseReport = (stdout) => {
 };
 
 const workspace = await mkdtemp(join(tmpdir(), "pageforge-smoke-"));
-let failure = null;
+const failures = [];
+const skipped = [];
 
 try {
   const fixture = await writeFixture(workspace);
-  process.stdout.write(`smoke: launching electron against ${fixture.archive}\n`);
-  const result = await runElectron([".", "--smoke", fixture.archive]);
-  const report = parseReport(result.stdout);
 
-  if (report === null) {
-    failure = `The app produced no report.\nexit=${result.code} signal=${result.signal}\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`;
-  } else if (report.smoke !== "ok") {
-    failure = `The app reported a failure: ${JSON.stringify(report)}`;
-  } else {
-    assert.equal(report.pages, 4, "expected the four fixture pages");
-    assert.equal(report.spreads, 4, "expected one spread per page in single-page mode");
-    assert.equal(report.spreadPages, 1, "expected the first spread to hold one page");
-    assert.equal(report.renderedImages, 1, "expected one image element for the first spread");
-    assert.equal(report.firstPageProbe.width, 600, "expected the header probe to report page width");
-    assert.equal(report.firstPageProbe.height, 900, "expected the header probe to report page height");
-    assert.equal(report.firstImageLoaded, true, "expected the first page image to decode");
-    assert.equal(report.firstImageNaturalWidth, 600, "expected the decoded image width");
-    process.stdout.write(
-      `smoke: OK — ${report.pages} pages, ${report.spreads} spreads, first page decoded at ${report.firstImageNaturalWidth}px, file ${report.displayName}\n`,
-    );
+  const cases = [
+    {
+      label: "CBZ",
+      target: fixture.archive,
+      expected: { pages: 4, format: "png", width: 600, height: 900 },
+    },
+    {
+      label: "CB7",
+      target: fixture.sevenZip,
+      expected: { pages: 4, format: "png", width: 600, height: 900 },
+    },
+    {
+      label: "CBR",
+      target: fixture.rar,
+      expected: { pages: 4, format: "png", width: 600, height: 900 },
+    },
+    {
+      label: "PDF",
+      target: fixture.pdf,
+      expected: { pages: 3, format: "pdf", width: 612, height: 792 },
+    },
+  ];
+
+  for (const testCase of cases) {
+    if (testCase.target === null) {
+      skipped.push(`${testCase.label}: no RAR compressor installed, so CBR stays unverified`);
+      continue;
+    }
+    process.stdout.write(`smoke: launching electron against ${testCase.label}\n`);
+    const result = await runElectron([".", "--smoke", testCase.target]);
+    const report = parseReport(result.stdout);
+
+    try {
+      if (report === null) {
+        throw new Error(
+          `no report (exit=${result.code} signal=${result.signal})\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`,
+        );
+      }
+      assert.equal(report.smoke, "ok", `app reported ${JSON.stringify(report)}`);
+      assert.equal(report.pages, testCase.expected.pages, `${testCase.label} page count`);
+      assert.equal(report.spreads, testCase.expected.pages, `${testCase.label} spread count`);
+      assert.equal(report.spreadPages, 1, `${testCase.label} first spread size`);
+      assert.equal(report.renderedPages, 1, `${testCase.label} rendered page count`);
+      assert.equal(report.firstPageRendered, true, `${testCase.label} first page rendered`);
+      assert.equal(report.firstPageFormat, testCase.expected.format, `${testCase.label} first page format`);
+      assert.equal(report.firstPageProbe.width, testCase.expected.width, `${testCase.label} first page width`);
+      assert.equal(report.firstPageProbe.height, testCase.expected.height, `${testCase.label} first page height`);
+      process.stdout.write(
+        `smoke: ${testCase.label} OK — ${report.pages} pages, first page ${report.firstPageFormat} ${report.firstPageProbe.width}x${report.firstPageProbe.height} rendered\n`,
+      );
+    } catch (error) {
+      failures.push(`${testCase.label}: ${error.message}`);
+    }
   }
 } catch (error) {
-  failure = error instanceof Error ? `${error.message}` : String(error);
+  failures.push(error instanceof Error ? error.message : String(error));
 } finally {
   await rm(workspace, { recursive: true, force: true });
 }
 
-if (failure !== null) {
-  process.stderr.write(`smoke: FAILED — ${failure}\n`);
+for (const note of skipped) process.stdout.write(`smoke: SKIPPED — ${note}\n`);
+if (failures.length > 0) {
+  for (const failure of failures) process.stderr.write(`smoke: FAILED — ${failure}\n`);
   process.exit(1);
 }
+process.stdout.write(`smoke: all ${failures.length === 0 ? "checked" : ""} formats passed\n`);

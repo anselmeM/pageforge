@@ -8,9 +8,15 @@
  */
 
 import { deflateSync } from "node:zlib";
-import { mkdir, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+const run = promisify(execFile);
 
 /* CRC-32, needed by both the PNG chunks and the ZIP records. */
 const CRC_TABLE = (() => {
@@ -159,7 +165,123 @@ const NOISE = [
   { name: "readme.txt", data: Buffer.from("not a page", "utf8") },
 ];
 
-/** Write `sample.cbz` and `folder/` under `directory`; returns their paths. */
+/** A 7z archive (CB7) built with the same wasm decoder the reader uses. */
+export const sevenZipBytes = async (entries) => {
+  const { default: SevenZip } = await import("7z-wasm");
+  const sevenZip = await SevenZip({ print: () => {}, printErr: () => {} });
+  const fs = sevenZip.FS;
+  for (const { name, data } of entries) {
+    const parts = name.split("/");
+    let directory = "";
+    for (const part of parts.slice(0, -1)) {
+      directory = `${directory}/${part}`;
+      if (!fs.analyzePath(directory).exists) fs.mkdir(directory);
+    }
+    fs.writeFile(name, new Uint8Array(data));
+  }
+  sevenZip.callMain(["a", "archive.cb7", ...entries.map((entry) => entry.name), "-y"]);
+  return Buffer.from(fs.readFile("archive.cb7"));
+};
+
+const RAR_CANDIDATES = [
+  "C:\\Program Files\\WinRAR\\Rar.exe",
+  "C:\\Program Files (x86)\\WinRAR\\Rar.exe",
+];
+
+/**
+ * A RAR archive (CBR). RAR compression is proprietary: only WinRAR's own
+ * `Rar.exe` writes the format, so this returns null when no compressor is
+ * installed and the CBR tests are skipped rather than silently passing.
+ */
+export const rarBytes = async (entries) => {
+  const compressor = process.env.PAGEFORGE_RAR_EXE ?? RAR_CANDIDATES.find((path) => existsSync(path));
+  if (compressor === undefined) return null;
+  const workspace = await mkdtemp(join(tmpdir(), "pageforge-rar-"));
+  try {
+    for (const { name, data } of entries) {
+      const target = join(workspace, name);
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, data);
+    }
+    await run(compressor, ["a", "-ep1", "-idq", "archive.cbr", ...entries.map((entry) => entry.name)], {
+      cwd: workspace,
+    });
+    return await readFile(join(workspace, "archive.cbr"));
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+};
+
+/**
+ * A minimal but valid PDF: one filled page per size, with a real cross-reference
+ * table so strict parsers accept it.
+ */
+export const pdfBytes = (pages) => {
+  const pageCount = pages.length;
+  const firstPageObject = 3;
+  const firstContentObject = firstPageObject + pageCount;
+  const objects = new Map();
+  objects.set(1, "<< /Type /Catalog /Pages 2 0 R >>");
+  objects.set(
+    2,
+    `<< /Type /Pages /Kids [${pages.map((_, index) => `${firstPageObject + index} 0 R`).join(" ")}] /Count ${pageCount} >>`,
+  );
+  pages.forEach((page, index) => {
+    const [red, green, blue] = page.colour ?? [40, 40, 40];
+    const content = `${(red / 255).toFixed(3)} ${(green / 255).toFixed(3)} ${(blue / 255).toFixed(3)} rg 0 0 ${page.width} ${page.height} re f`;
+    objects.set(
+      firstPageObject + index,
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.width} ${page.height}] /Contents ${firstContentObject + index} 0 R >>`,
+    );
+    objects.set(
+      firstContentObject + index,
+      `<< /Length ${Buffer.byteLength(content, "latin1")} >>\nstream\n${content}\nendstream`,
+    );
+  });
+
+  const chunks = [];
+  let offset = 0;
+  const push = (text) => {
+    const buffer = Buffer.from(text, "latin1");
+    chunks.push(buffer);
+    offset += buffer.length;
+  };
+  push("%PDF-1.4\n");
+  const offsets = new Map();
+  const totalObjects = 2 + pageCount * 2;
+  for (let number = 1; number <= totalObjects; number += 1) {
+    offsets.set(number, offset);
+    push(`${number} 0 obj\n${objects.get(number)}\nendobj\n`);
+  }
+  const xrefOffset = offset;
+  push(`xref\n0 ${totalObjects + 1}\n`);
+  push("0000000000 65535 f \n");
+  for (let number = 1; number <= totalObjects; number += 1) {
+    push(`${String(offsets.get(number)).padStart(10, "0")} 00000 n \n`);
+  }
+  push(`trailer\n<< /Size ${totalObjects + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+  return Buffer.concat(chunks);
+};
+
+/** PDF page sizes: three portrait pages and one landscape, like the archives. */
+export const FIXTURE_PDF_PAGES = [
+  { width: 612, height: 792, colour: [220, 60, 60] },
+  { width: 612, height: 792, colour: [60, 220, 60] },
+  { width: 792, height: 612, colour: [60, 60, 220] },
+];
+
+const FIXTURE_ENTRIES = [
+  ...FIXTURE_PAGES.map((page) => ({
+    name: page.name,
+    data: pngBytes(page.width, page.height, page.colour),
+  })),
+  ...NOISE,
+];
+
+/**
+ * Write every fixture under `directory`. `rar` is null when no RAR compressor
+ * is installed, which callers must treat as "unverified", not "passing".
+ */
 export const writeFixture = async (directory) => {
   await mkdir(join(directory, "folder", "nested"), { recursive: true });
 
@@ -169,16 +291,20 @@ export const writeFixture = async (directory) => {
   await writeFile(join(directory, "folder", "nested", "page20.bmp"), bmpBytes(700, 500, [90, 90, 140]));
   await writeFile(join(directory, "folder", "notes.txt"), "ignored\n", "utf8");
 
-  const entries = [
-    ...FIXTURE_PAGES.map((page) => ({
-      name: page.name,
-      data: pngBytes(page.width, page.height, page.colour),
-    })),
-    ...NOISE,
-  ];
   const archive = join(directory, "sample.cbz");
-  await writeFile(archive, zipBytes(entries));
-  return { archive, folder: join(directory, "folder") };
+  await writeFile(archive, zipBytes(FIXTURE_ENTRIES));
+
+  const sevenZip = join(directory, "sample.cb7");
+  await writeFile(sevenZip, await sevenZipBytes(FIXTURE_ENTRIES));
+
+  const pdf = join(directory, "sample.pdf");
+  await writeFile(pdf, pdfBytes(FIXTURE_PDF_PAGES));
+
+  const rarBytesResult = await rarBytes(FIXTURE_ENTRIES);
+  const rar = rarBytesResult === null ? null : join(directory, "sample.cbr");
+  if (rar !== null) await writeFile(rar, rarBytesResult);
+
+  return { archive, folder: join(directory, "folder"), sevenZip, rar, pdf };
 };
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

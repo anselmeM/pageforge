@@ -9,6 +9,7 @@
 import { clampScale, fitScale, zoomStep } from "../core/fit.js";
 import { buildSpreads, spreadIndexForPage, visualOrder } from "../core/spread.js";
 import { clampPan, panBounds, zoomAtPoint } from "../core/viewport.js";
+import { openPdfDocument, startPdfRender } from "./pdf.js";
 
 const api = window.pageforge;
 
@@ -29,6 +30,8 @@ const UNKNOWN_PAGE_SIZE = { width: 1000, height: 1500 };
 
 const state = {
   book: null,
+  /** Open pdf.js document when the book is a PDF, otherwise null. */
+  pdf: null,
   spreads: [],
   spreadIndex: 0,
   scale: 1,
@@ -115,12 +118,50 @@ const layoutSpread = () => {
     const oriented = orientedSize(base);
     node.wrapper.style.width = `${oriented.width * state.scale}px`;
     node.wrapper.style.height = `${oriented.height * state.scale}px`;
-    node.image.style.width = `${base.width * state.scale}px`;
-    node.image.style.height = `${base.height * state.scale}px`;
-    node.image.style.transform = `translate(-50%, -50%) rotate(${state.rotation}deg)`;
+    node.element.style.width = `${base.width * state.scale}px`;
+    node.element.style.height = `${base.height * state.scale}px`;
+    node.element.style.transform = `translate(-50%, -50%) rotate(${state.rotation}deg)`;
   }
   spreadEl.style.transform = `translate(${state.offset.x}px, ${state.offset.y}px)`;
+  schedulePdfRenders();
   updateStatus();
+};
+
+/**
+ * Render PDF canvases at a resolution that matches what is on screen, and again
+ * when zooming makes the current bitmap too coarse. Archives need none of this:
+ * their images are decoded by Chromium at display resolution.
+ */
+const schedulePdfRenders = () => {
+  if (state.pdf === null) return;
+  for (const node of state.nodes) {
+    if (node.kind !== "pdf") continue;
+    const resolution = Math.min(3, Math.max(1, (window.devicePixelRatio || 1) * state.scale));
+    const previous = node.renderedScale;
+    if (previous > 0 && Math.abs(resolution - previous) / previous <= 0.25) continue;
+    void renderPdfNode(node, resolution);
+  }
+};
+
+const renderPdfNode = async (node, resolution) => {
+  node.currentTask?.cancel?.();
+  const token = Symbol("render");
+  node.renderToken = token;
+  try {
+    const { task, scale } = await startPdfRender(state.pdf, node.page.index, node.element, resolution);
+    if (node.renderToken !== token) {
+      task.cancel();
+      return;
+    }
+    node.currentTask = task;
+    await task.promise;
+    if (node.renderToken === token) node.renderedScale = scale;
+  } catch (error) {
+    // A cancelled render is expected whenever the user moves on quickly.
+    if (node.renderToken === token && error?.name !== "RenderingCancelledException") {
+      toast(`Page ${node.page.index + 1} could not be rendered.`);
+    }
+  }
 };
 
 /** A page whose header was unreadable reports its real size once decoded. */
@@ -135,6 +176,7 @@ const learnDimensions = (page, image) => {
 
 const renderSpread = () => {
   const spread = currentSpread();
+  for (const node of state.nodes) node.currentTask?.cancel?.();
   state.nodes = [];
   spreadEl.replaceChildren();
   if (spread === null) {
@@ -145,15 +187,28 @@ const renderSpread = () => {
     const page = state.book.pages[pageIndex];
     const wrapper = document.createElement("div");
     wrapper.className = "page";
-    const image = document.createElement("img");
-    image.src = page.url;
-    image.alt = page.name;
-    image.draggable = false;
-    image.addEventListener("load", () => learnDimensions(page, image));
-    image.addEventListener("error", () => toast(`Could not display ${page.name}`));
-    wrapper.append(image);
+    const isPdf = page.kind === "pdf";
+    const element = isPdf ? document.createElement("canvas") : document.createElement("img");
+    if (isPdf) {
+      element.className = "page-canvas";
+    } else {
+      element.src = page.url;
+      element.alt = page.name;
+      element.draggable = false;
+      element.addEventListener("load", () => learnDimensions(page, element));
+      element.addEventListener("error", () => toast(`Could not display ${page.name}`));
+    }
+    wrapper.append(element);
     spreadEl.append(wrapper);
-    state.nodes.push({ page, wrapper, image });
+    state.nodes.push({
+      page,
+      wrapper,
+      element,
+      kind: isPdf ? "pdf" : "image",
+      renderedScale: 0,
+      renderToken: null,
+      currentTask: null,
+    });
   }
   layoutSpread();
 };
@@ -176,31 +231,63 @@ const applyFit = () => {
   layoutSpread();
 };
 
-const reportReady = async () => {
-  const first = document.querySelector("#spread img");
-  if (first !== null && !first.complete) {
+/** Wait until the first page of the spread has something on screen. */
+const waitForFirstPage = async () => {
+  const node = state.nodes[0];
+  if (node === undefined) return;
+  if (node.kind === "image") {
+    if (node.element.complete) return;
     await new Promise((resolve) => {
-      first.addEventListener("load", resolve, { once: true });
-      first.addEventListener("error", resolve, { once: true });
+      node.element.addEventListener("load", resolve, { once: true });
+      node.element.addEventListener("error", resolve, { once: true });
       setTimeout(resolve, 5000);
     });
+    return;
   }
-  const settled = document.querySelector("#spread img");
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline && node.renderedScale === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+};
+
+const reportReady = async () => {
+  await waitForFirstPage();
+  const node = state.nodes[0];
   const spread = currentSpread();
+  const rendered =
+    node !== undefined &&
+    (node.kind === "image"
+      ? Boolean(node.element.complete && node.element.naturalWidth > 0)
+      : node.renderedScale > 0 && node.element.width > 0);
   api.reportReady({
     displayName: state.book.displayName,
+    kind: state.book.kind,
     pages: state.book.pages.length,
     spreads: state.spreads.length,
     spreadPages: spread === null ? 0 : spread.indices.length,
-    renderedImages: document.querySelectorAll("#spread img").length,
-    firstImageLoaded: Boolean(settled !== null && settled.complete && settled.naturalWidth > 0),
-    firstImageNaturalWidth: settled === null ? 0 : settled.naturalWidth,
-    firstPageProbe: { width: state.book.pages[0]?.width ?? 0, height: state.book.pages[0]?.height ?? 0 },
+    renderedPages: state.nodes.length,
+    firstPageRendered: rendered,
+    firstPageFormat: node === undefined ? null : node.page.format,
+    firstPageProbe: node === undefined ? null : { width: node.page.width, height: node.page.height },
   });
 };
 
-const applyBook = (book) => {
-  state.book = book;
+const applyBook = async (book) => {
+  state.pdf = null;
+  if (book.kind === "pdf") {
+    try {
+      const { document: pdfDocument, pages } = await openPdfDocument(book.documentUrl);
+      state.pdf = pdfDocument;
+      state.book = { ...book, pages };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast(`This PDF could not be opened: ${message}`);
+      api.reportError({ code: "document-unreadable", message });
+      return;
+    }
+  } else {
+    state.book = book;
+  }
   state.spreadIndex = 0;
   state.offset = { x: 0, y: 0 };
   state.rotation = 0;
@@ -636,7 +723,7 @@ const init = async () => {
   api.on("app:fullscreen", (value) => document.body.classList.toggle("fullscreen", Boolean(value)));
 
   const book = await api.getBook();
-  if (book !== null) applyBook(book);
+  if (book !== null) await applyBook(book);
 
   try {
     document.body.classList.toggle("fullscreen", Boolean(await api.isFullscreen()));

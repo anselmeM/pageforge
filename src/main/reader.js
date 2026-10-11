@@ -6,8 +6,9 @@
  * up front. Page bytes are read on demand and never held open after close().
  */
 
-import { open, readdir, stat } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join, relative, sep } from "node:path";
 
 import yauzl from "yauzl";
 
@@ -19,6 +20,8 @@ const MAX_PROBE_BYTES = 512 * 1024;
 const MAX_FOLDER_DEPTH = 8;
 const PROBE_CONCURRENCY = 8;
 const ARCHIVE_EXTENSIONS = new Set([".cbz", ".zip", ".zipx"]);
+const RAR_EXTENSIONS = new Set([".cbr", ".rar"]);
+const SEVEN_ZIP_EXTENSIONS = new Set([".cb7", ".7z"]);
 
 const EXTENSION_MIME = new Map([
   [".jpg", "image/jpeg"],
@@ -134,12 +137,12 @@ const openFolder = async (targetPath) => {
   return {
     kind: "folder",
     targetPath,
-    displayName: targetPath.split(sep).filter(Boolean).pop() ?? targetPath,
+    displayName: basename(targetPath),
     pages,
     async readPage(index) {
       const page = pages[index];
       if (page === undefined) throw new ReaderError("page-out-of-range", `No page at index ${index}.`);
-      return readFilePrefix(page.absolutePath, Number.MAX_SAFE_INTEGER);
+      return readFile(page.absolutePath);
     },
     async close() {},
   };
@@ -217,7 +220,7 @@ const readStreamPrefix = (stream, maxBytes) =>
     stream.once("error", onError);
   });
 
-const openArchive = async (targetPath) => {
+const openZipArchive = async (targetPath) => {
   const extension = extensionOf(targetPath);
   if (!ARCHIVE_EXTENSIONS.has(extension)) {
     throw new ReaderError(
@@ -251,7 +254,7 @@ const openArchive = async (targetPath) => {
     return {
       kind: "archive",
       targetPath,
-      displayName: targetPath.split(sep).filter(Boolean).pop() ?? targetPath,
+      displayName: basename(targetPath),
       pages,
       async readPage(index) {
         const page = pages[index];
@@ -271,7 +274,127 @@ const openArchive = async (targetPath) => {
   }
 };
 
-/** Open a folder of images or a ZIP-based comic archive. */
+/**
+ * RAR and 7z are extracted to a private staging directory when they are opened.
+ *
+ * Neither format offers the cheap random access a ZIP central directory does:
+ * a solid RAR or 7z stream has to be decompressed in order, and their decoder
+ * libraries expose whole-entry extraction only. Reading a few header bytes per
+ * page would therefore mean re-decompressing most of the archive many times
+ * over. Materialising once turns page reads into ordinary file reads, gives
+ * every page a known size up front, and keeps one cleanup owner for the copy.
+ */
+const releaseStaging = async (staging) => {
+  try {
+    await rm(staging, { recursive: true, force: true });
+  } catch (cause) {
+    // Keep the failure visible: the directory outlives this session otherwise,
+    // and the caller needs the path to clean it up.
+    throw new ReaderError(
+      "cleanup-failed",
+      `Extracted files could not be removed: ${staging}`,
+      { staging, reason: cause instanceof Error ? cause.message : String(cause) },
+    );
+  }
+};
+
+const extractRar = async (targetPath, destination) => {
+  const { createExtractorFromFile } = await import("node-unrar-js");
+  try {
+    const extractor = await createExtractorFromFile({ filepath: targetPath, targetPath: destination });
+    const headers = [...extractor.getFileList().fileHeaders];
+    if (headers.some((header) => header.flags.encrypted)) {
+      throw new ReaderError("archive-encrypted", "This archive is password protected.", { targetPath });
+    }
+    // node-unrar-js extracts lazily: nothing reaches the destination until the
+    // `files` generator is consumed, so this loop performs the extraction.
+    for (const _file of extractor.extract().files) {
+      /* intentionally empty */
+    }
+  } catch (cause) {
+    if (cause instanceof ReaderError) throw cause;
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (/password|encrypt/i.test(message)) {
+      throw new ReaderError("archive-encrypted", "This archive is password protected.", { targetPath });
+    }
+    throw new ReaderError("archive-unreadable", `This RAR archive could not be read: ${message}`, { targetPath });
+  }
+};
+
+/** Copy a tree out of 7z-wasm's in-memory filesystem onto the real disk. */
+const copyEmscriptenTree = async (fs, source, destination) => {
+  for (const name of fs.readdir(source)) {
+    if (name === "." || name === "..") continue;
+    const child = `${source}/${name}`;
+    const target = join(destination, name);
+    const info = fs.stat(child);
+    if (fs.isDir(info.mode)) {
+      await mkdir(target, { recursive: true });
+      await copyEmscriptenTree(fs, child, target);
+    } else {
+      await writeFile(target, Buffer.from(fs.readFile(child)));
+    }
+  }
+};
+
+const extractSevenZip = async (targetPath, destination) => {
+  const { default: SevenZip } = await import("7z-wasm");
+  const sevenZip = await SevenZip({ print: () => {}, printErr: () => {} });
+  const fs = sevenZip.FS;
+  const archiveName = `input${extensionOf(targetPath) || ".7z"}`;
+  fs.writeFile(archiveName, new Uint8Array(await readFile(targetPath)));
+  fs.mkdir("/out");
+  try {
+    sevenZip.callMain(["x", archiveName, "-o/out", "-y"]);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (/password|encrypt/i.test(message)) {
+      throw new ReaderError("archive-encrypted", "This archive is password protected.", { targetPath });
+    }
+    throw new ReaderError("archive-unreadable", `This 7z archive could not be read: ${message}`, { targetPath });
+  }
+  await copyEmscriptenTree(fs, "/out", destination);
+};
+
+/** Open an archive by staging its contents, then reading it as a folder. */
+const openStagedArchive = async (targetPath, extract, format) => {
+  const staging = await mkdtemp(join(tmpdir(), "pageforge-extract-"));
+  let staged = null;
+  try {
+    await extract(targetPath, staging);
+    staged = await openFolder(staging);
+  } catch (error) {
+    await releaseStaging(staging).catch(() => {});
+    throw error;
+  }
+  return {
+    kind: "archive",
+    format,
+    targetPath,
+    displayName: basename(targetPath),
+    pages: staged.pages,
+    readPage: (index) => staged.readPage(index),
+    async close() {
+      await staged.close();
+      await releaseStaging(staging);
+    },
+  };
+};
+
+/** Route an archive to the backend that owns its extension. */
+const openArchive = async (targetPath) => {
+  const extension = extensionOf(targetPath);
+  if (ARCHIVE_EXTENSIONS.has(extension)) return openZipArchive(targetPath);
+  if (RAR_EXTENSIONS.has(extension)) return openStagedArchive(targetPath, extractRar, "rar");
+  if (SEVEN_ZIP_EXTENSIONS.has(extension)) return openStagedArchive(targetPath, extractSevenZip, "7z");
+  throw new ReaderError(
+    "format-not-supported-yet",
+    `"${extension || "this file"}" archives are not readable yet; CBZ, ZIP, CBR, RAR, CB7 and 7Z are supported.`,
+    { targetPath, extension },
+  );
+};
+
+/** Open a folder of images or a supported comic archive. */
 export const openTarget = async (targetPath) => {
   const info = await stat(targetPath);
   if (info.isDirectory()) return openFolder(targetPath);

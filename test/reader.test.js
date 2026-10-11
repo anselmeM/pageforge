@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -112,10 +112,91 @@ describe("folder reading", () => {
   });
 });
 
+describe("seven-zip (CB7) reading", () => {
+  it("reads the same pages out of a 7z archive", async () => {
+    const reader = await openTarget(fixture.sevenZip);
+    try {
+      assert.equal(reader.kind, "archive");
+      assert.equal(reader.format, "7z");
+      assert.equal(reader.displayName, "sample.cb7");
+      assert.deepEqual(
+        reader.pages.map((page) => [page.name, page.width, page.height]),
+        [
+          ["page01.png", 600, 900],
+          ["page02.png", 600, 900],
+          ["page03.png", 1200, 800],
+          ["page10.png", 600, 900],
+        ],
+      );
+    } finally {
+      await reader.close();
+    }
+  });
+
+  it("returns decodable page bytes", async () => {
+    const reader = await openTarget(fixture.sevenZip);
+    try {
+      const bytes = await reader.readPage(2);
+      assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+      assert.ok(bytes.length > 100);
+    } finally {
+      await reader.close();
+    }
+  });
+});
+
+describe("rar (CBR) reading", () => {
+  it("reads a real RAR archive, or says why it cannot", async (context) => {
+    if (fixture.rar === null) {
+      context.skip(
+        "no RAR compressor installed (WinRAR's Rar.exe or PAGEFORGE_RAR_EXE); CBR stays unverified",
+      );
+      return;
+    }
+    const reader = await openTarget(fixture.rar);
+    try {
+      assert.equal(reader.kind, "archive");
+      assert.equal(reader.format, "rar");
+      assert.deepEqual(
+        reader.pages.map((page) => [page.name, page.width, page.height, page.format]),
+        [
+          ["page01.png", 600, 900, "png"],
+          ["page02.png", 600, 900, "png"],
+          ["page03.png", 1200, 800, "png"],
+          ["page10.png", 600, 900, "png"],
+        ],
+      );
+      const bytes = await reader.readPage(0);
+      assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+    } finally {
+      await reader.close();
+    }
+  });
+});
+
+describe("staged archive ownership", () => {
+  it("removes its extraction directory when closed", async () => {
+    const stagingDirectories = async () =>
+      (await readdir(tmpdir())).filter((name) => name.startsWith("pageforge-extract-"));
+    const before = new Set(await stagingDirectories());
+
+    const reader = await openTarget(fixture.sevenZip);
+    const during = await stagingDirectories();
+    const created = during.filter((name) => !before.has(name));
+    assert.equal(created.length, 1, "expected one staging directory while open");
+    await reader.close();
+
+    const after = await stagingDirectories();
+    for (const name of created) {
+      assert.equal(after.includes(name), false, `staging directory ${name} outlived close()`);
+    }
+  });
+});
+
 describe("reader failures", () => {
   it("explains that other archive formats are not readable yet", async () => {
-    const target = join(workspace, "volume.cbr");
-    await writeFile(target, Buffer.from("not really a rar", "utf8"));
+    const target = join(workspace, "volume.cbt");
+    await writeFile(target, Buffer.from("not really a tar", "utf8"));
     await assert.rejects(
       () => openTarget(target),
       (error) => error instanceof ReaderError && error.code === "format-not-supported-yet",

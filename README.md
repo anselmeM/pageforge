@@ -1,17 +1,19 @@
 # PageForge
 
-A local comic-book reader for **CBZ/ZIP archives** and **folders of images**.
+A local comic-book reader for **CBZ/ZIP**, **CBR/RAR**, **CB7/7Z** and **PDF**,
+plus plain folders of images.
 
 PageForge is an independent implementation built from the observed feature set of
 CDisplayEx 1.10.33 (its release notes, its translation catalog, and its installed
 file inventory on this machine). It shares no code, assets, or branding with
 that product, and it does not read or modify CDisplayEx's files.
 
-## Status: milestone 1 — core reading
+## Status: milestone 2 — formats
 
 Working today:
 
-- Opens **CBZ/ZIP** archives and **folders of images** (recursive, depth-limited)
+- Opens **CBZ/ZIP**, **CBR/RAR**, **CB7/7Z**, **PDF**, and **folders of images**
+  (recursive, depth-limited)
 - Page order is natural filename order (`page2` before `page10`)
 - Packaging noise is skipped: `__MACOSX/`, AppleDouble `._*`, `.DS_Store`, `Thumbs.db`
 - **Single page** and **double page** reading; a wide page gets a spread to itself
@@ -22,16 +24,38 @@ Working today:
   page-turn click zones
 - Page dimensions come from image headers (PNG, JPEG, GIF, BMP, WebP), so spreads
   are laid out without decoding every page first
+- PDFs are rendered by pdf.js per page and re-rendered when zoom outgrows the
+  bitmap; encrypted RAR and 7z archives are reported rather than half-read
 
-Not implemented yet (deliberately deferred): CBR/CB7 and other archives, PDF,
-DjVu, TIFF/AVIF decoding, thumbnail bar, bookmarks and history, resume-last-page,
-configurable keyboard shortcuts, colour correction, resampling choices, page
-cache, portable configuration.
+Not implemented yet (deliberately deferred): CBT/TAR archives, DjVu and TIFF/AVIF
+decoding, thumbnail bar, bookmarks and history, resume-last-page, configurable
+keyboard shortcuts, colour correction, resampling choices, page cache, portable
+configuration.
+
+## How archives are read
+
+| Format | Strategy |
+| --- | --- |
+| ZIP / CBZ | Read directly. The central directory gives random access, so page sizes are probed by reading a few header bytes per entry. |
+| RAR / CBR | Extracted once to a private staging directory, then read as a file tree. |
+| 7z / CB7 | Same staging approach; 7z-wasm extracts into its in-memory filesystem and the tree is copied out. |
+| PDF | Not read by the main process at all. The bytes are served to the viewer, which renders pages with pdf.js onto canvases. |
+
+RAR and 7z are staged because neither offers cheap random access: a solid stream
+must be decompressed in order, and their decoder libraries only expose whole-entry
+extraction. Reading a few header bytes per page would mean re-decompressing most
+of the archive many times over. Staging costs one pass at open, then makes every
+page read an ordinary file read and gives every page a known size up front.
+
+The staging directory is owned by the reader. `close()` removes it, and a failed
+removal is reported with the path rather than swallowed, so the directory cannot
+quietly outlive the session.
 
 ## Requirements
 
 - Node.js 22 or newer (developed on 24)
-- Electron is installed as a dev dependency; no system runtime is required
+- Electron and the decoders are installed as dependencies; no system runtime is
+  required and nothing is installed system-wide
 
 ## Run
 
@@ -72,8 +96,8 @@ the situation and explains it rather than crashing obscurely.
 src/core/      pure logic, no Electron and no DOM: page ordering, image header
                parsing, spread grouping, fit and pan arithmetic
 src/main/      Electron main process (CommonJS), the archive/folder reader, and
-               the pageforge:// protocol that serves page bytes
-src/renderer/  the viewer: DOM, input, and the chrome
+               the pageforge:// protocol that serves page bytes and app assets
+src/renderer/  the viewer: DOM, input, chrome, and the pdf.js integration
 scripts/       fixture generator, launcher, smoke test
 ```
 
@@ -85,22 +109,28 @@ Two decisions worth knowing:
   ES module and is loaded with `import()`.
 - **The viewer is served over `pageforge://app/…`, not `file://`.** Chromium
   blocks ES-module imports over `file://`, and the viewer imports `src/core/`
-  directly. The same privileged scheme also serves page bytes from
-  `pageforge://page/<n>`, so images are fetched, decoded and cached by Chromium
-  like any other image.
+  directly. The same privileged scheme serves page bytes from
+  `pageforge://page/<n>`, the open PDF from `pageforge://app/document`, and
+  pdf.js from `pageforge://app/vendor/…`. Everything shares one origin on
+  purpose: a custom scheme does not negotiate CORS, so a cross-origin module
+  import or document fetch fails with a bare status 0.
 
 ## Tests
 
 ```sh
-npm test        # 42 unit and reader tests
-npm run smoke   # launches Electron against a generated CBZ and asserts it decodes
+npm test        # 46 unit and reader tests
+npm run smoke   # launches Electron against CBZ, CB7, CBR and PDF fixtures
 npm run verify  # both
 ```
 
-The fixture is generated, not committed: `scripts/make-fixture.mjs` writes real
-PNG and BMP bytes and packs them into a real ZIP, including the packaging noise a
-CBZ usually carries. `/scripts/smoke.mjs` is the only check that exercises the
-protocol, the preload bridge and the viewer together.
+The fixtures are generated, not committed: `scripts/make-fixture.mjs` writes real
+PNG and BMP bytes, packs them into a real ZIP and a real 7z archive, writes a
+valid PDF with a proper cross-reference table, and — when WinRAR's `Rar.exe` or
+`PAGEFORGE_RAR_EXE` is available — produces a real RAR as well. RAR compression
+is proprietary, so when no compressor exists the CBR test **skips with a reason
+instead of passing**: CBR stays explicitly unverified rather than silently green.
+`scripts/smoke.mjs` is the only check that exercises the protocols, the preload
+bridge and the viewer together, across all four formats.
 
 To render a PNG of the app without clicking anything:
 
@@ -116,8 +146,11 @@ says what it does not know:
 
 | Area | Basis |
 | --- | --- |
-| Supported formats, reading modes, zoom/fit/rotate, RTL mode, full screen, page caching, configurable shortcuts, colour correction | **Observed** in CDisplayEx's release notes and translation catalog |
+| Supported formats (CBZ, CBR/RAR incl. RAR5, CB7/7z, PDF, folders, WebP, animated GIF/WebP, TIFF), reading modes, zoom/fit/rotate, RTL mode, full screen, page caching, configurable shortcuts, colour correction | **Observed** in CDisplayEx's release notes and translation catalog |
+| CBR and CB7 read through a staging directory rather than lazy per-page decompression | **Chosen** for this app; CDisplayEx decompresses lazily with its own cache |
+| PDF pages rendered by pdf.js onto canvases | **Chosen** implementation; CDisplayEx uses an embedded PDFium build |
 | Landscape pages occupy their own spread | **Inferred** — a common rule for two-page scans, not verified against CDisplayEx |
 | First page shown alone in double-page mode | **Chosen default off**; some readers do this for covers, CDisplayEx's default is unverified |
 | "Fit Landscape" / "Fit Portrait" | **Not implemented**, because their exact semantics were not observed; guessing would be worse than omitting them |
 | Keyboard shortcuts and click zones | **Chosen** for this app; CDisplayEx's bindings were not inspected |
+| CBT/TAR, DjVu | **Not implemented yet**; CDisplayEx supports both |
