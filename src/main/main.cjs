@@ -130,6 +130,9 @@ const startupCommand = commandArgument === undefined ? null : commandArgument.sl
  */
 const reportArgument = process.argv.find((argument) => argument.startsWith("--report="));
 const reportPath = reportArgument === undefined ? null : reportArgument.slice("--report=".length);
+/** `--settle=<ms>` waits before capturing, for lazy content to finish loading. */
+const settleArgument = process.argv.find((argument) => argument.startsWith("--settle="));
+const settleMs = settleArgument === undefined ? 700 : Number(settleArgument.slice("--settle=".length)) || 700;
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -168,8 +171,8 @@ const exitCleanly = async (code) => {
 };
 
 const takeCapture = async () => {
-  // One extra frame after the last layout so the capture is not taken mid-paint.
-  await delay(700);
+  // Let lazy content (thumbnails, deferred renders) settle before the shot.
+  await delay(settleMs);
   const image = await mainWindow.webContents.capturePage();
   await writeFile(capturePath, image.toPNG());
   process.stdout.write(`${JSON.stringify({ capture: capturePath, command: startupCommand })}\n`);

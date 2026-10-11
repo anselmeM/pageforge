@@ -187,6 +187,9 @@ directory and runs. Nothing needs installing, and it can be copied anywhere.
 
 Packaging details that matter:
 
+- **Close the app before building.** Windows keeps the running executable locked,
+  so the build stalls instead of failing. `npm run dist` checks for a running
+  PageForge first and stops with that reason.
 - **The WASM decoders are unpacked from the asar.** `7z-wasm` and `node-unrar-js`
   are listed under `asarUnpack`, because they load `.wasm` files that a packaged
   app must be able to read from disk.
@@ -211,6 +214,17 @@ archive format (including the unpacked WASM decoders), the PDF path (pdf.js read
 back out of the asar), a full render to PNG, and that no staged extraction
 directory is left behind on exit.
 
+### Check one comic end to end
+
+```sh
+npm run verify:archive -- "D:\comics\some book.cbz"
+```
+
+Opens the file through the same reader the app uses and **reads every page**,
+reporting the page count, total bytes, elapsed time, any page that comes back
+empty, and any page whose bytes disagree with its probed header. Opening a book
+and showing page one does not prove page seventeen reads.
+
 ### Automation flags
 
 The app takes a few flags that make it verifiable without a human:
@@ -221,6 +235,7 @@ The app takes a few flags that make it verifiable without a human:
 | `--report=<file>` | Also write that report to a file |
 | `--capture=<file>` | Write a PNG of the finished window, then exit |
 | `--command=<name>` | Run one viewer command after the first book opens |
+| `--settle=<ms>` | Wait before capturing, so lazy content has loaded |
 
 ## Architecture
 
