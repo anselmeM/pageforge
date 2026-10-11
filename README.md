@@ -175,6 +175,53 @@ accelerator are not rebindable.
 | `Ctrl`+`,` | Reading quality settings |
 | `F11` | Full screen |
 
+## Build a Windows executable
+
+```sh
+npm run dist        # one self-contained file: release/PageForge-0.1.0-portable.exe
+npm run dist:dir    # an unpacked folder: release/win-unpacked/PageForge.exe
+```
+
+The portable build is a single ~108 MB `.exe` that unpacks itself to a temporary
+directory and runs. Nothing needs installing, and it can be copied anywhere.
+
+Packaging details that matter:
+
+- **The WASM decoders are unpacked from the asar.** `7z-wasm` and `node-unrar-js`
+  are listed under `asarUnpack`, because they load `.wasm` files that a packaged
+  app must be able to read from disk.
+- **The portable launcher does not attach the app's stdout**, so `--smoke` cannot
+  report through the pipe. `--report=<file>` writes the same report to a file
+  instead, and that is what the packaged verification uses.
+- **The build is unsigned.** Windows SmartScreen will warn on first run; choose
+  "More info → Run anyway". Signing needs a certificate this project does not have.
+- `electron-builder` is a development dependency, so it never ships inside the
+  app. `npm audit` reports moderate findings in its transitive tree; none of them
+  reach the packaged output.
+
+### Verify a packaged build
+
+```sh
+npm run verify:dist                                   # release/win-unpacked/PageForge.exe
+node scripts/verify-dist.mjs release/PageForge-0.1.0-portable.exe
+```
+
+This launches the real executable and checks what packaging can break: every
+archive format (including the unpacked WASM decoders), the PDF path (pdf.js read
+back out of the asar), a full render to PNG, and that no staged extraction
+directory is left behind on exit.
+
+### Automation flags
+
+The app takes a few flags that make it verifiable without a human:
+
+| Flag | Effect |
+| --- | --- |
+| `--smoke <path>` | Open that book, print a one-line JSON report, exit |
+| `--report=<file>` | Also write that report to a file |
+| `--capture=<file>` | Write a PNG of the finished window, then exit |
+| `--command=<name>` | Run one viewer command after the first book opens |
+
 ## Architecture
 
 ```

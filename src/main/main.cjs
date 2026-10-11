@@ -97,8 +97,51 @@ const capturePath = captureArgument === undefined ? null : captureArgument.slice
 /** `--command=<cmd>` runs one viewer command once the first book is open. */
 const commandArgument = process.argv.find((argument) => argument.startsWith("--command="));
 const startupCommand = commandArgument === undefined ? null : commandArgument.slice("--command=".length);
+/**
+ * `--report=<file>` also writes the run report to a file.
+ *
+ * The NSIS portable launcher starts the app without attaching its stdout, so a
+ * scripted run of a packaged build cannot read the report from the pipe. Writing
+ * it to a file works however the process was started.
+ */
+const reportArgument = process.argv.find((argument) => argument.startsWith("--report="));
+const reportPath = reportArgument === undefined ? null : reportArgument.slice("--report=".length);
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const emitReport = async (payload) => {
+  const line = `${JSON.stringify(payload)}\n`;
+  process.stdout.write(line);
+  if (reportPath === null) return;
+  try {
+    await writeFile(reportPath, line, "utf8");
+  } catch {
+    /* The stream already carried it; a report file is a convenience. */
+  }
+};
+
+/**
+ * Exit without leaking resources.
+ *
+ * `app.exit()` settles immediately and does not fire `before-quit`, so the
+ * staged extraction directory of an open RAR or 7z archive would be left behind.
+ * Every automated exit goes through here instead.
+ */
+const exitCleanly = async (code) => {
+  try {
+    await closeSession();
+  } catch {
+    /* Nothing useful to do: the process is leaving either way. */
+  }
+  if (library !== null) {
+    try {
+      await library.flush();
+    } catch {
+      /* A queued write that cannot land is reported by the store itself. */
+    }
+  }
+  app.exit(code);
+};
 
 const takeCapture = async () => {
   // One extra frame after the last layout so the capture is not taken mid-paint.
@@ -549,25 +592,25 @@ const registerIpc = () => {
     if (smokeReported) return;
     if (isSmokeRun) {
       smokeReported = true;
-      process.stdout.write(`${JSON.stringify({ smoke: "ok", ...payload })}\n`);
-      app.exit(0);
+      await emitReport({ smoke: "ok", ...payload });
+      await exitCleanly(0);
       return;
     }
     if (capturePath !== null) {
       smokeReported = true;
       try {
         await takeCapture();
-        app.exit(0);
+        await exitCleanly(0);
       } catch (error) {
-        process.stdout.write(`${JSON.stringify({ capture: capturePath, error: friendlyError(error) })}\n`);
-        app.exit(1);
+        await emitReport({ capture: capturePath, error: friendlyError(error) });
+        await exitCleanly(1);
       }
     }
   });
-  ipcMain.on("app:renderer-error", (_event, payload) => {
+  ipcMain.on("app:renderer-error", async (_event, payload) => {
     if (!isSmokeRun) return;
-    process.stdout.write(`${JSON.stringify({ smoke: "error", ...payload })}\n`);
-    app.exit(1);
+    await emitReport({ smoke: "error", ...payload });
+    await exitCleanly(1);
   });
 };
 
@@ -606,8 +649,8 @@ app.on("before-quit", () => {
 });
 
 if (isSmokeRun) {
-  setTimeout(() => {
-    process.stdout.write(`${JSON.stringify({ smoke: "timeout" })}\n`);
-    app.exit(2);
+  setTimeout(async () => {
+    await emitReport({ smoke: "timeout" });
+    await exitCleanly(2);
   }, 30_000);
 }

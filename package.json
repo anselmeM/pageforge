@@ -12,7 +12,45 @@
     "test": "node --test \"test/*.test.js\"",
     "fixture": "node scripts/make-fixture.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "verify": "npm test && npm run smoke"
+    "verify": "npm test && npm run smoke",
+    "dist": "electron-builder --win portable",
+    "dist:dir": "electron-builder --win --dir",
+    "verify:dist": "node scripts/verify-dist.mjs"
+  },
+  "build": {
+    "appId": "tools.pageforge.reader",
+    "productName": "PageForge",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "README.md",
+      "!test/**",
+      "!docs/**",
+      "!fixtures/**",
+      "!release/**",
+      "!scripts/**"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/7z-wasm/**",
+      "node_modules/node-unrar-js/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "PageForge-${version}-portable.exe"
+    }
   },
   "dependencies": {
     "7z-wasm": "^1.2.0",
@@ -21,6 +59,7 @@
     "yauzl": "^3.4.0"
   },
   "devDependencies": {
-    "electron": "^44.7.0"
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
   }
 }
