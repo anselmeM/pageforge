@@ -12,6 +12,7 @@
  * shim instead. The reader stays an ES module and is loaded with `import()`.
  */
 
+const { appendFileSync } = require("node:fs");
 const { readFile, stat, writeFile } = require("node:fs/promises");
 const { basename, extname, isAbsolute, join, relative, resolve } = require("node:path");
 
@@ -32,6 +33,29 @@ if (typeof protocol === "undefined" || typeof app === "undefined") {
 const here = __dirname;
 /** Application assets are served from `src/` so `renderer/` can import `core/`. */
 const appRoot = resolve(here, "..");
+
+/**
+ * Record a failure that escaped its caller, and keep running.
+ *
+ * Electron's default for an uncaught main-process exception is a modal crash
+ * dialog. For a reader that is the wrong trade: a fault in one page read should
+ * not end the session, and a truncated dialog stack is not something a user can
+ * act on. The full stack goes to stderr and to a log beside the library.
+ */
+const recordFailure = (kind, error) => {
+  const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  process.stderr.write(`PageForge ${kind}: ${detail}\n`);
+  try {
+    const directory = process.env.PAGEFORGE_STATE_DIR ?? (app.isReady() ? app.getPath("userData") : null);
+    if (directory === null) return;
+    appendFileSync(join(directory, "pageforge-errors.log"), `[${new Date().toISOString()}] ${kind}: ${detail}\n`);
+  } catch {
+    /* stderr already has it. */
+  }
+};
+
+process.on("uncaughtException", (error) => recordFailure("uncaughtException", error));
+process.on("unhandledRejection", (reason) => recordFailure("unhandledRejection", reason));
 
 const STATIC_MIME = new Map([
   [".html", "text/html; charset=utf-8"],

@@ -49,6 +49,54 @@ export class ReaderError extends Error {
   }
 }
 
+/**
+ * Tracks in-flight page reads so a close can wait for them.
+ *
+ * Closing an archive releases the file descriptor, but a page read that is
+ * already running still holds a reference to the stream that owns it. Deflated
+ * entries are piped through zlib, which asks the underlying stream for more data
+ * while a read is in flight; releasing the descriptor in that window makes the
+ * queued read dereference a released stream inside an fs callback. That is not a
+ * rejected promise a caller can handle — it is an uncaught exception in the main
+ * process. So a close waits for reads to settle first, with a bound so a stuck
+ * read cannot hold the app open forever.
+ */
+const createReadGate = (timeoutMs = 5000) => {
+  let active = 0;
+  let idleResolvers = [];
+  let closed = false;
+  return {
+    get active() {
+      return active;
+    },
+    begin() {
+      if (closed) throw new ReaderError("reader-closed", "This book is already closed.");
+      active += 1;
+    },
+    end() {
+      active -= 1;
+      if (active > 0) return;
+      const resolvers = idleResolvers;
+      idleResolvers = [];
+      for (const resolve of resolvers) resolve(true);
+    },
+    async waitForIdle() {
+      closed = true;
+      if (active === 0) return true;
+      let timer = null;
+      const timedOut = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      });
+      const settled = await Promise.race([
+        new Promise((resolve) => idleResolvers.push(resolve)),
+        timedOut,
+      ]);
+      if (timer !== null) clearTimeout(timer);
+      return settled;
+    },
+  };
+};
+
 /** Content type to serve a page with, preferring the sniffed container. */
 export const mimeForPage = (page) =>
   (page.format === null ? undefined : mimeForFormat(page.format)) ??
@@ -80,7 +128,6 @@ const probeFromBuffer = async (readPrefix) => {
   }
   return size;
 };
-
 const readFilePrefix = async (filePath, maxBytes) => {
   const handle = await open(filePath, "r");
   try {
@@ -134,6 +181,7 @@ const openFolder = async (targetPath) => {
       format: size?.format ?? null,
     };
   });
+  const gate = createReadGate();
   return {
     kind: "folder",
     targetPath,
@@ -142,9 +190,18 @@ const openFolder = async (targetPath) => {
     async readPage(index) {
       const page = pages[index];
       if (page === undefined) throw new ReaderError("page-out-of-range", `No page at index ${index}.`);
-      return readFile(page.absolutePath);
+      gate.begin();
+      try {
+        return await readFile(page.absolutePath);
+      } finally {
+        gate.end();
+      }
     },
-    async close() {},
+    async close() {
+      // Staged archives delete this tree on close, so the wait also stops a read
+      // from racing the deletion.
+      await gate.waitForIdle();
+    },
   };
 };
 
@@ -192,33 +249,35 @@ const readZipStream = (zipfile, entry) =>
     });
   });
 
-/** Read at most `maxBytes` from a zip entry stream, then release it. */
+/**
+ * Read at most `maxBytes` from a zip entry stream, letting it finish naturally.
+ *
+ * The stream must not be destroyed early. Deflated entries are piped through
+ * zlib, which queues a read on the underlying file stream while one is already
+ * running; destroying the stream in that window leaves the queued read using a
+ * released context, and it fails inside an fs callback as an uncaught exception
+ * rather than as a rejected promise. Draining the entry costs one decompression
+ * pass and keeps the stream's own lifecycle intact.
+ */
 const readStreamPrefix = (stream, maxBytes) =>
   new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
-    let settled = false;
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      stream.removeListener("data", onData);
-      stream.removeListener("end", onEnd);
-      stream.removeListener("error", onError);
-      stream.destroy();
-      if (error) reject(error);
-      else resolve(Buffer.concat(chunks, total));
-    };
-    const onData = (chunk) => {
-      chunks.push(chunk);
-      total += chunk.length;
-      if (total >= maxBytes) finish();
-    };
-    const onEnd = () => finish();
-    const onError = (error) => finish(error);
-    stream.on("data", onData);
-    stream.once("end", onEnd);
-    stream.once("error", onError);
+    stream.on("data", (chunk) => {
+      if (total >= maxBytes) return;
+      const take = Math.min(chunk.length, maxBytes - total);
+      chunks.push(chunk.subarray(0, take));
+      total += take;
+    });
+    stream.once("end", () => resolve(Buffer.concat(chunks, total)));
+    stream.once("error", reject);
   });
+
+/** Probe a zip entry's image header. */
+const probeZipEntry = async (zipfile, entry) => {
+  const bytes = await readStreamPrefix(await readZipStream(zipfile, entry), MAX_PROBE_BYTES);
+  return imageSize(bytes.subarray(0, Math.min(INITIAL_PROBE_BYTES, bytes.length))) ?? imageSize(bytes);
+};
 
 const openZipArchive = async (targetPath) => {
   const extension = extensionOf(targetPath);
@@ -230,6 +289,7 @@ const openZipArchive = async (targetPath) => {
     );
   }
   const zipfile = await openZip(targetPath);
+  const gate = createReadGate();
   try {
     const entries = await indexZipEntries(zipfile);
     const names = selectPages([...entries.keys()]);
@@ -238,9 +298,7 @@ const openZipArchive = async (targetPath) => {
     }
     const pages = await mapConcurrent(names, PROBE_CONCURRENCY, async (name, index) => {
       const entry = entries.get(name);
-      const size = await probeFromBuffer(async (bytes) =>
-        readStreamPrefix(await readZipStream(zipfile, entry), bytes),
-      );
+      const size = await probeZipEntry(zipfile, entry);
       return {
         index,
         name,
@@ -259,13 +317,26 @@ const openZipArchive = async (targetPath) => {
       async readPage(index) {
         const page = pages[index];
         if (page === undefined) throw new ReaderError("page-out-of-range", `No page at index ${index}.`);
-        const stream = await readZipStream(zipfile, page.entry);
-        const chunks = [];
-        for await (const chunk of stream) chunks.push(chunk);
-        return Buffer.concat(chunks);
+        gate.begin();
+        try {
+          const stream = await readZipStream(zipfile, page.entry);
+          const chunks = [];
+          for await (const chunk of stream) chunks.push(chunk);
+          return Buffer.concat(chunks);
+        } finally {
+          gate.end();
+        }
       },
       async close() {
+        const settled = await gate.waitForIdle();
         zipfile.close();
+        if (!settled) {
+          // Reported rather than thrown: the descriptor must still be released,
+          // and a caller mid-quit cannot act on a rejection.
+          process.stderr.write(
+            `PageForge: closed ${targetPath} while ${gate.active} page read(s) were still running.\n`,
+          );
+        }
       },
     };
   } catch (error) {

@@ -7,7 +7,7 @@
  * project free of binary fixtures that cannot be reviewed in a diff.
  */
 
-import { deflateSync } from "node:zlib";
+import { deflateRawSync, deflateSync } from "node:zlib";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -127,45 +127,51 @@ export const bmpBytes = (width, height, [red, green, blue] = [128, 32, 32]) => {
   return Buffer.concat([header, pixels]);
 };
 
-/** ZIP archive using stored (uncompressed) entries. */
-export const zipBytes = (entries) => {
+/**
+ * ZIP archive. Real comic archives are deflate-compressed, so that is the
+ * default; `deflate: false` keeps entries stored for cases that need raw bytes.
+ */
+export const zipBytes = (entries, { deflate = true } = {}) => {
   const locals = [];
   const centrals = [];
   let offset = 0;
-  for (const { name, data } of entries) {
+  for (const { name, data, deflate: entryDeflate } of entries) {
     const nameBytes = Buffer.from(name, "utf8");
+    const compress = entryDeflate ?? deflate;
+    const stored = compress ? deflateRawSync(data) : data;
+    const method = compress ? 8 : 0;
     const crc = crc32(data);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
     local.writeUInt16LE(0, 6); // flags
-    local.writeUInt16LE(0, 8); // method: stored
+    local.writeUInt16LE(method, 8);
     local.writeUInt16LE(0, 10); // time
     local.writeUInt16LE(0x21, 12); // date (1980-01-01)
     local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(stored.length, 18);
     local.writeUInt32LE(data.length, 22);
     local.writeUInt16LE(nameBytes.length, 26);
     local.writeUInt16LE(0, 28);
-    locals.push(local, nameBytes, data);
+    locals.push(local, nameBytes, stored);
 
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(20, 4);
     central.writeUInt16LE(20, 6);
     central.writeUInt16LE(0, 8);
-    central.writeUInt16LE(0, 10);
+    central.writeUInt16LE(method, 10);
     central.writeUInt16LE(0, 12);
     central.writeUInt16LE(0x21, 14);
     central.writeUInt32LE(crc, 16);
-    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(stored.length, 20);
     central.writeUInt32LE(data.length, 24);
     central.writeUInt16LE(nameBytes.length, 28);
     // Offset of this entry's own local header. Every entry needs its real
     // offset, otherwise a reader resolves them all to the first one.
     central.writeUInt32LE(offset, 42);
     centrals.push(central, nameBytes);
-    offset += local.length + nameBytes.length + data.length;
+    offset += local.length + nameBytes.length + stored.length;
   }
   const centralBytes = Buffer.concat(centrals);
   const eocd = Buffer.alloc(22);
