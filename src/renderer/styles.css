@@ -518,7 +518,7 @@ dialog dd {
   opacity: 1;
 }
 
-/* Full screen hides the chrome entirely. */
-body.fullscreen #toolbar {
+/* Full screen hides the chrome, unless the reader asked to keep the toolbar. */
+body.hide-toolbar #toolbar {
   display: none;
 }

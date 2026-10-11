@@ -48,6 +48,7 @@ const prefGamma = document.getElementById("pref-gamma");
 const prefVibrance = document.getElementById("pref-vibrance");
 const prefResampling = document.getElementById("pref-resampling");
 const prefPrefetch = document.getElementById("pref-prefetch");
+const prefToolbarFullscreen = document.getElementById("pref-toolbar-fullscreen");
 /** The three per-channel transfer functions inside the colour filter. */
 const colorCurves = {
   r: document.querySelector("#pf-color feFuncR"),
@@ -104,6 +105,8 @@ const state = {
   shortcuts: normalizeShortcuts(DEFAULT_SHORTCUTS),
   /** Slot awaiting a key press in the shortcuts dialog, or null. */
   capturing: null,
+  /** True while the window really is full screen. */
+  fullscreen: false,
   /** True while the slideshow is advancing pages. */
   slideshowRunning: false,
 };
@@ -461,6 +464,8 @@ const reportReady = async () => {
     magnifierVisible: state.preferences.magnifierVisible === true,
     slideshowRunning: state.slideshowRunning,
     nextPagePrimary: state.shortcuts["next-page"].primary,
+    // The window's real state, not what the viewer thinks it asked for.
+    fullscreen: await api.isFullscreen().catch(() => state.fullscreen),
   });
 };
 
@@ -518,9 +523,11 @@ const applyBook = async (book) => {
   // automated run observes the state the command produced.
   if (!startupCommandApplied) {
     startupCommandApplied = true;
-    const command = await api.getStartupCommand();
+    const commands = await api.getStartupCommand();
     if (token !== applyToken) return;
-    if (command !== null && command !== undefined) await runCommand(command);
+    for (const command of Array.isArray(commands) ? commands : [commands]) {
+      if (typeof command === "string" && command.length > 0) await runCommand(command);
+    }
   }
   if (token !== applyToken) return;
   void reportReady();
@@ -542,6 +549,7 @@ const applyPreferences = () => {
   thumbnailsEl.hidden = !state.thumbnailsVisible;
   if (state.thumbnailsVisible) buildThumbnails();
   applyColorFilter();
+  applyChrome();
   syncPreferenceControls();
   syncToolbar();
 };
@@ -738,6 +746,7 @@ const syncPreferenceControls = () => {
   prefVibrance.value = String(preferences.vibrance);
   prefResampling.value = preferences.resampling;
   prefPrefetch.value = String(preferences.prefetchPages);
+  prefToolbarFullscreen.checked = preferences.toolbarInFullscreen === true;
   showPreferenceValues();
 };
 
@@ -771,6 +780,9 @@ const wirePreferences = () => {
   prefResampling.addEventListener("change", () => void writePreference("resampling", prefResampling.value));
   prefPrefetch.addEventListener("change", () =>
     void writePreference("prefetchPages", Number(prefPrefetch.value)),
+  );
+  prefToolbarFullscreen.addEventListener("change", () =>
+    void writePreference("toolbarInFullscreen", prefToolbarFullscreen.checked),
   );
   for (const [element, key] of [
     [prefSensitivity, "colorSensitivity"],
@@ -1058,6 +1070,20 @@ const openGotoDialog = () => {
   gotoInput.select();
 };
 
+/**
+ * Chrome for the current window state.
+ *
+ * In full screen the toolbar is hidden for immersion, but that must never be the
+ * only way out: Escape and F11 both leave full screen, and entering it says so.
+ */
+const applyChrome = () => {
+  document.body.classList.toggle("fullscreen", state.fullscreen);
+  document.body.classList.toggle(
+    "hide-toolbar",
+    state.fullscreen && state.preferences.toolbarInFullscreen !== true,
+  );
+};
+
 const setFullScreen = async (value) => {
   const current = await api.isFullscreen();
   if (value === undefined ? true : value !== current) await api.toggleFullscreen();
@@ -1136,8 +1162,7 @@ const runCommand = async (command) => {
       return;
     case "toggle-fullscreen":
       void setFullScreen();
-      return;
-    case "fullscreen-on":
+      return;    case "fullscreen-on":
       void setFullScreen(true);
       return;
     case "fullscreen-off":
@@ -1190,6 +1215,14 @@ const runCommand = async (command) => {
 const wireKeyboard = () => {
   window.addEventListener("keydown", async (event) => {
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+
+    // Escape is the expected way out of full screen, and it is handled here
+    // rather than as a binding so it cannot be reassigned away.
+    if (event.key === "Escape" && state.fullscreen) {
+      event.preventDefault();
+      await runCommand("fullscreen-off");
+      return;
+    }
 
     // Rebinding captures the next key, whatever it is.
     if (state.capturing !== null) {
@@ -1394,7 +1427,12 @@ const init = async () => {
     toast(error.message);
     api.reportError(error);
   });
-  api.on("app:fullscreen", (value) => document.body.classList.toggle("fullscreen", Boolean(value)));
+  api.on("app:fullscreen", (value) => {
+    const wasFullscreen = state.fullscreen;
+    state.fullscreen = Boolean(value);
+    applyChrome();
+    if (state.fullscreen && !wasFullscreen) toast("Full screen — press Esc or F11 to leave");
+  });
   api.on("app:preferences", (preferences) => {
     state.preferences = preferences;
     applyPreferences();
@@ -1407,10 +1445,11 @@ const init = async () => {
   const book = await api.getBook();
   if (book !== null) await applyBook(book);
   try {
-    document.body.classList.toggle("fullscreen", Boolean(await api.isFullscreen()));
+    state.fullscreen = Boolean(await api.isFullscreen());
   } catch {
     /* Non-fatal: the window simply starts windowed. */
   }
+  applyChrome();
 };
 
 await init();

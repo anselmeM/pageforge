@@ -122,6 +122,36 @@ try {
     }
   }
 
+  // Full screen must be enterable and leavable, and the window must come back.
+  // A user stuck in full screen with no visible toolbar has no way out, so this
+  // is a correctness check rather than a nicety.
+  for (const [label, command, expected] of [
+    ["full screen on", "toggle-fullscreen", true],
+    ["full screen on then off", "toggle-fullscreen,fullscreen-off", false],
+  ]) {
+    const reportFile = join(workspace, `report-${label.replaceAll(/\s+/gu, "-")}.json`);
+    const result = await run(
+      ["--smoke", `--report=${reportFile}`, `--command=${command}`, fixture.archive],
+      env,
+    );
+    let report = null;
+    try {
+      report = JSON.parse(await readFile(reportFile, "utf8"));
+    } catch {
+      report = parseReport(result.stdout);
+    }
+    try {
+      if (report === null) {
+        throw new Error(`no report (exit=${result.code})\n${result.stdout}\n${result.stderr}`);
+      }
+      assert.equal(report.smoke, "ok", `app reported ${JSON.stringify(report)}`);
+      assert.equal(report.fullscreen, expected, `${label}: window state`);
+      process.stdout.write(`verify-dist: ${label} OK — fullscreen=${report.fullscreen}\n`);
+    } catch (error) {
+      failures.push(`${label}: ${error.message}`);
+    }
+  }
+
   // The capture path exercises the full render pipeline, not just the loader.
   const screenshot = join(workspace, "packaged.png");
   const captured = await run([`--capture=${screenshot}`, fixture.archive], env);

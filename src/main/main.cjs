@@ -97,6 +97,8 @@ protocol.registerSchemesAsPrivileged([
 let session = null;
 let documentPath = null;
 let mainWindow = null;
+/** True once the app has started quitting, so a hide is not fought. */
+let quitting = false;
 /** The persistent library, created once the app is ready. */
 let library = null;
 
@@ -118,9 +120,16 @@ let smokeReported = false;
 /** `--capture=<file>` writes a PNG of the rendered window and exits. */
 const captureArgument = process.argv.find((argument) => argument.startsWith("--capture="));
 const capturePath = captureArgument === undefined ? null : captureArgument.slice("--capture=".length);
-/** `--command=<cmd>` runs one viewer command once the first book is open. */
+/** `--command=<cmd>[,<cmd>]` runs viewer commands once the first book is open. */
 const commandArgument = process.argv.find((argument) => argument.startsWith("--command="));
-const startupCommand = commandArgument === undefined ? null : commandArgument.slice("--command=".length);
+const startupCommands =
+  commandArgument === undefined
+    ? []
+    : commandArgument
+        .slice("--command=".length)
+        .split(",")
+        .map((command) => command.trim())
+        .filter((command) => command.length > 0);
 /**
  * `--report=<file>` also writes the run report to a file.
  *
@@ -175,7 +184,7 @@ const takeCapture = async () => {
   await delay(settleMs);
   const image = await mainWindow.webContents.capturePage();
   await writeFile(capturePath, image.toPNG());
-  process.stdout.write(`${JSON.stringify({ capture: capturePath, command: startupCommand })}\n`);
+  process.stdout.write(`${JSON.stringify({ capture: capturePath, command: startupCommands })}\n`);
 };
 
 const positionalTarget = () =>
@@ -289,16 +298,28 @@ const send = (channel, payload) => {
 
 /**
  * Full screen is owned by the main process: the menu item, the toolbar button
- * and the F11 accelerator all funnel through here, so the checkbox and the
- * window can never disagree.
+ * and the F11 accelerator all funnel through here.
+ *
+ * The window's own state is the only source of truth. Reporting back the value
+ * that was *requested* would let the menu checkbox and the viewer's chrome
+ * disagree with the window, which leaves a user with a hidden toolbar and no
+ * working way out.
  */
-const setFullScreen = (value) => {
-  if (mainWindow === null || mainWindow.isDestroyed()) return false;
-  mainWindow.setFullScreen(value);
+const syncFullScreenState = () => {
+  const value = mainWindow !== null && !mainWindow.isDestroyed() && mainWindow.isFullScreen();
   const item = Menu.getApplicationMenu()?.getMenuItemById("full-screen");
   if (item !== undefined && item !== null) item.checked = value;
   send("app:fullscreen", value);
   return value;
+};
+
+const setFullScreen = (value) => {
+  if (mainWindow === null || mainWindow.isDestroyed()) return false;
+  // A hidden window cannot be revealed by entering full screen, so make sure it
+  // is on screen first.
+  if (value && !mainWindow.isVisible()) mainWindow.show();
+  mainWindow.setFullScreen(value);
+  return syncFullScreenState();
 };
 
 /** Preferences that have a menu checkbox, so the two can never disagree. */
@@ -455,7 +476,31 @@ const createWindow = async () => {
   // Ctrl+wheel is reserved for the viewer's own zoom, so Chromium's page zoom
   // must not also react to it.
   mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
-  mainWindow.once("ready-to-show", () => mainWindow.show());
+
+  // The window's own events are the source of truth, so a change made by the OS
+  // or a shortcut keeps the menu and the viewer in step.
+  mainWindow.on("enter-full-screen", syncFullScreenState);
+  mainWindow.on("leave-full-screen", syncFullScreenState);
+  mainWindow.on("maximize", syncFullScreenState);
+  mainWindow.on("unmaximize", syncFullScreenState);
+
+  const reveal = () => {
+    if (mainWindow === null || mainWindow.isDestroyed()) return;
+    if (!mainWindow.isVisible()) mainWindow.show();
+    syncFullScreenState();
+  };
+  mainWindow.once("ready-to-show", reveal);
+  // A page that never paints must not leave the app running with no window.
+  setTimeout(reveal, 3000);
+
+  // Nothing in this app hides the window, so a hide means something went wrong;
+  // an invisible running app is worse than a surprising one.
+  mainWindow.on("hide", () => {
+    if (quitting) return;
+    process.stderr.write("PageForge: the window was hidden unexpectedly; showing it again.\n");
+    mainWindow.show();
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -563,7 +608,7 @@ const registerIpc = () => {
   ipcMain.handle("shell:open-external", (_event, url) => shell.openExternal(url));
   // The viewer applies this itself, before it reports readiness, so an
   // automated run measures the state after the command rather than before it.
-  ipcMain.handle("app:startup-command", () => startupCommand);
+  ipcMain.handle("app:startup-command", () => startupCommands);
 
   ipcMain.handle("library:get", async () => {
     const store = await ensureLibrary();
@@ -670,6 +715,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  quitting = true;
   void closeSession();
   // Library writes are queued; give the last one a chance to land.
   if (library !== null) app.once("will-quit", () => void library.flush());

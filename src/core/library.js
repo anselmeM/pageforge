@@ -34,6 +34,8 @@ export const DEFAULT_PREFERENCES = {
   magnifierFactor: 3,
   /** Seconds each page is shown during a slideshow. */
   slideshowSeconds: 5,
+  /** Keep the toolbar on screen while in full screen. */
+  toolbarInFullscreen: false,
 };
 
 /**
@@ -56,6 +58,7 @@ export const PREFERENCE_RULES = {
   magnifierSize: { type: "number", min: 60, max: 320, integer: true },
   magnifierFactor: { type: "number", min: 1.5, max: 6 },
   slideshowSeconds: { type: "number", min: 1, max: 120, integer: true },
+  toolbarInFullscreen: { type: "boolean" },
 };
 
 /**
