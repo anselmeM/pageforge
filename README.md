@@ -8,7 +8,7 @@ CDisplayEx 1.10.33 (its release notes, its translation catalog, and its installe
 file inventory on this machine). It shares no code, assets, or branding with
 that product, and it does not read or modify CDisplayEx's files.
 
-## Status: milestone 2 — formats
+## Status: milestone 3 — library and resume
 
 Working today:
 
@@ -26,11 +26,31 @@ Working today:
   are laid out without decoding every page first
 - PDFs are rendered by pdf.js per page and re-rendered when zoom outgrows the
   bitmap; encrypted RAR and 7z archives are reported rather than half-read
+- **Resumes** each book at the page it was left on, remembers a **recent list**,
+  and keeps **named bookmarks** per book
+- **Thumbnail strip** with lazy per-page previews that jumps to any page
 
 Not implemented yet (deliberately deferred): CBT/TAR archives, DjVu and TIFF/AVIF
-decoding, thumbnail bar, bookmarks and history, resume-last-page, configurable
-keyboard shortcuts, colour correction, resampling choices, page cache, portable
-configuration.
+decoding, colour correction, resampling choices, page cache tuning, configurable
+keyboard shortcuts, portable configuration.
+
+## Library and resume
+
+Recent books, bookmarks and preferences live in one JSON file under the app's
+user-data directory (`library.json`). Writes are atomic — written to a temporary
+file and renamed — and serialised, so an interrupted write cannot leave a
+half-written library. If the file is ever unreadable it is **preserved under a
+new name and reported**, rather than silently discarded, because it is the only
+copy of the user's bookmarks.
+
+Books are keyed by absolute path, with Windows paths folded to lower case and
+forward slashes. A book that is moved or renamed is therefore treated as a new
+book; the store cannot tell a move from a different file without hashing every
+book on open, and pretending otherwise would attach one book's bookmarks to
+another.
+
+Set `PAGEFORGE_STATE_DIR` to keep a run away from the real library. The tests and
+the smoke run both use it.
 
 ## How archives are read
 
@@ -80,6 +100,9 @@ the situation and explains it rather than crashing obscurely.
 | `←` `PageUp` | Previous page |
 | `Home` / `End` | First / last page |
 | `Ctrl`+`G` | Go to page |
+| `Ctrl`+`B` | Bookmarks for this book (add, jump, delete) |
+| `Ctrl`+`T` | Show or hide the thumbnail strip |
+| `Ctrl`+`R` | Recent books |
 | `+` / `−` | Zoom in / out |
 | `0` | Actual size (100%) |
 | `F` / `W` / `H` | Fit screen / width / height |
@@ -118,8 +141,9 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 46 unit and reader tests
-npm run smoke   # launches Electron against CBZ, CB7, CBR and PDF fixtures
+npm test        # 71 unit, store and reader tests
+npm run smoke   # launches Electron against CBZ, CB7, CBR and PDF fixtures,
+                # then reopens a book to prove resume and bookmarks survive
 npm run verify  # both
 ```
 
@@ -153,4 +177,6 @@ says what it does not know:
 | First page shown alone in double-page mode | **Chosen default off**; some readers do this for covers, CDisplayEx's default is unverified |
 | "Fit Landscape" / "Fit Portrait" | **Not implemented**, because their exact semantics were not observed; guessing would be worse than omitting them |
 | Keyboard shortcuts and click zones | **Chosen** for this app; CDisplayEx's bindings were not inspected |
+| Resume, recent list, named bookmarks, thumbnail strip | **Observed** features in CDisplayEx (its translation catalog lists "Resume", "Open Recent", "Bookmarks", "Add", "Delete", "Show thumbnails") |
+| Books keyed by absolute path rather than by content digest | **Chosen** limitation; a moved or renamed book is treated as new |
 | CBT/TAR, DjVu | **Not implemented yet**; CDisplayEx supports both |

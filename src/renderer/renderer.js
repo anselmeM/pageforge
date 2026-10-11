@@ -7,6 +7,7 @@
  */
 
 import { clampScale, fitScale, zoomStep } from "../core/fit.js";
+import { DEFAULT_PREFERENCES, describeHistoryEntry, resolveStartPage } from "../core/library.js";
 import { buildSpreads, spreadIndexForPage, visualOrder } from "../core/spread.js";
 import { clampPan, panBounds, zoomAtPoint } from "../core/viewport.js";
 import { openPdfDocument, startPdfRender } from "./pdf.js";
@@ -24,9 +25,18 @@ const toastEl = document.getElementById("toast");
 const gotoDialog = document.getElementById("goto-dialog");
 const gotoInput = document.getElementById("goto-input");
 const helpDialog = document.getElementById("help-dialog");
+const thumbnailsEl = document.getElementById("thumbnails");
+const bookmarkList = document.getElementById("bookmark-list");
+const bookmarkName = document.getElementById("bookmark-name");
+const bookmarksDialog = document.getElementById("bookmarks-dialog");
+const recentList = document.getElementById("recent-list");
+const recentDialog = document.getElementById("recent-dialog");
 
 /** Fallback size for pages whose header could not be parsed. */
 const UNKNOWN_PAGE_SIZE = { width: 1000, height: 1500 };
+
+/** Set once the command-line startup command has been applied. */
+let startupCommandApplied = false;
 
 const state = {
   book: null,
@@ -40,10 +50,15 @@ const state = {
   rotation: 0,
   doublePage: false,
   rightToLeft: false,
-  /** DOM nodes for the current spread: [{ page, wrapper, image }]. */
+  /** DOM nodes for the current spread: [{ page, wrapper, element }]. */
   nodes: [],
   drag: null,
   lastDragMoved: false,
+  /** Library state, refreshed from the main process. */
+  preferences: { ...DEFAULT_PREFERENCES },
+  history: [],
+  bookmarks: [],
+  thumbnailsVisible: false,
 };
 
 /* Sizing ------------------------------------------------------------------- */
@@ -269,11 +284,17 @@ const reportReady = async () => {
     firstPageRendered: rendered,
     firstPageFormat: node === undefined ? null : node.page.format,
     firstPageProbe: node === undefined ? null : { width: node.page.width, height: node.page.height },
+    // Library facts, so a smoke run can prove resume and bookmarks end to end.
+    startPage: (spread?.indices[0] ?? 0) + 1,
+    bookmarkCount: state.bookmarks.length,
+    historyCount: state.history.length,
+    thumbnails: thumbnailsEl.hidden ? 0 : thumbnailsEl.querySelectorAll(".thumb").length,
   });
 };
 
 const applyBook = async (book) => {
   state.pdf = null;
+  state.preferences = book.preferences ?? state.preferences;
   if (book.kind === "pdf") {
     try {
       const { document: pdfDocument, pages } = await openPdfDocument(book.documentUrl);
@@ -294,9 +315,216 @@ const applyBook = async (book) => {
   rebuildSpreads();
   renderSpread();
   applyFit();
+
+  // Pick up this book's bookmarks, then resume where the reader left off.
+  await refreshLibrary();
+
+  const start = resolveStartPage(
+    { lastPage: book.resumePage },
+    state.book.pages.length,
+    state.preferences,
+  );
+  if (start > 1) {
+    goToPage(start);
+    toast(`Resumed at page ${start}`);
+  }
+  buildThumbnails();
   emptyState.hidden = true;
   syncToolbar();
+
+  // A command-line command is applied before readiness is reported, so an
+  // automated run observes the state the command produced.
+  if (!startupCommandApplied) {
+    startupCommandApplied = true;
+    const command = await api.getStartupCommand();
+    if (command !== null && command !== undefined) await runCommand(command);
+  }
   void reportReady();
+};
+
+/* Library: preferences, thumbnails, bookmarks, recents ---------------------- */
+
+const applyPreferences = () => {
+  state.thumbnailsVisible = state.preferences.showThumbnails === true;
+  thumbnailsEl.hidden = !state.thumbnailsVisible;
+  if (state.thumbnailsVisible) buildThumbnails();
+  syncToolbar();
+};
+
+const refreshLibrary = async () => {
+  const library = await api.getLibrary();
+  state.preferences = library.preferences;
+  state.history = library.history;
+  state.bookmarks = library.bookmarks;
+  applyPreferences();
+  if (library.loadProblem !== null && library.loadProblem !== undefined) toast(library.loadProblem);
+  return library;
+};
+
+let progressTimer = null;
+/** Remember the reading position, without writing on every page turn. */
+const reportProgress = () => {
+  const spread = currentSpread();
+  if (state.book === null || spread === null) return;
+  const page = spread.indices[0] + 1;
+  clearTimeout(progressTimer);
+  progressTimer = setTimeout(() => {
+    void api.setProgress(state.book.targetPath, page).catch(() => {});
+  }, 400);
+};
+
+let thumbnailObserver = null;
+
+const fillThumbnail = async (button) => {
+  const index = Number(button.dataset.page);
+  const page = state.book === null ? undefined : state.book.pages[index];
+  if (page === undefined) return;
+  if (page.kind === "pdf") {
+    if (state.pdf === null) return;
+    const canvas = document.createElement("canvas");
+    try {
+      const { task } = await startPdfRender(state.pdf, index, canvas, 0.3);
+      await task.promise;
+      button.replaceChildren(canvas);
+    } catch {
+      /* A thumbnail that was scrolled past is not worth reporting. */
+    }
+    return;
+  }
+  const image = document.createElement("img");
+  image.src = page.url;
+  image.alt = "";
+  button.replaceChildren(image);
+};
+
+const buildThumbnails = () => {
+  thumbnailObserver?.disconnect();
+  thumbnailObserver = null;
+  thumbnailsEl.replaceChildren();
+  if (!state.thumbnailsVisible || state.book === null) return;
+
+  thumbnailObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        thumbnailObserver.unobserve(entry.target);
+        void fillThumbnail(entry.target);
+      }
+    },
+    { root: thumbnailsEl, rootMargin: "300px" },
+  );
+
+  const fragment = document.createDocumentFragment();
+  state.book.pages.forEach((page, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "thumb";
+    button.dataset.page = String(index);
+    button.title = `${index + 1} · ${page.name}`;
+    button.addEventListener("click", () => goToPage(index + 1));
+    const number = document.createElement("span");
+    number.className = "thumb-number";
+    number.textContent = String(index + 1);
+    button.append(number);
+    fragment.append(button);
+  });
+  thumbnailsEl.append(fragment);
+  for (const button of thumbnailsEl.querySelectorAll(".thumb")) thumbnailObserver.observe(button);
+  updateThumbnailHighlight();
+};
+
+const updateThumbnailHighlight = () => {
+  if (state.thumbnailsVisible !== true) return;
+  const active = new Set(currentSpread()?.indices ?? []);
+  for (const button of thumbnailsEl.querySelectorAll(".thumb")) {
+    const isCurrent = active.has(Number(button.dataset.page));
+    button.classList.toggle("current", isCurrent);
+    if (isCurrent) button.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+};
+
+const renderBookmarkList = () => {
+  bookmarkList.replaceChildren();
+  document.getElementById("bookmark-empty").hidden = state.bookmarks.length > 0;
+  for (const bookmark of state.bookmarks) {
+    const item = document.createElement("li");
+    const jump = document.createElement("button");
+    jump.type = "button";
+    jump.className = "jump";
+    jump.textContent = bookmark.name;
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = ` — page ${bookmark.page}`;
+    jump.append(meta);
+    jump.addEventListener("click", () => {
+      bookmarksDialog.close();
+      goToPage(bookmark.page);
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "remove";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", async () => {
+      await api.removeBookmark(bookmark.id);
+      await refreshLibrary();
+      renderBookmarkList();
+    });
+    item.append(jump, remove);
+    bookmarkList.append(item);
+  }
+};
+
+const openBookmarksDialog = async () => {
+  const spread = currentSpread();
+  if (state.book === null || spread === null) return;
+  await refreshLibrary();
+  document.getElementById("bookmark-page").textContent = String(spread.indices[0] + 1);
+  bookmarkName.value = "";
+  renderBookmarkList();
+  bookmarksDialog.showModal();
+  bookmarkName.focus();
+};
+
+const renderRecentList = () => {
+  recentList.replaceChildren();
+  document.getElementById("recent-empty").hidden = state.history.length > 0;
+  for (const entry of state.history) {
+    const item = document.createElement("li");
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "jump";
+    open.textContent = entry.displayName;
+    open.title = entry.path;
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = ` — ${describeHistoryEntry(entry)}, last page ${entry.lastPage ?? 1}`;
+    open.append(meta);
+    open.addEventListener("click", async () => {
+      recentDialog.close();
+      const result = await api.openRecent(entry.path);
+      if (result.ok) await applyBook(result.book);
+      else toast(result.error.message);
+    });
+    item.append(open);
+    recentList.append(item);
+  }
+};
+
+const openRecentDialog = async () => {
+  await refreshLibrary();
+  renderRecentList();
+  recentDialog.showModal();
+};
+
+const addBookmarkAtCurrentPage = async () => {
+  const spread = currentSpread();
+  if (state.book === null || spread === null) return;
+  const page = spread.indices[0] + 1;
+  await api.addBookmark(state.book.targetPath, page, bookmarkName.value);
+  bookmarkName.value = "";
+  await refreshLibrary();
+  renderBookmarkList();
+  toast(`Bookmark added on page ${page}`);
 };
 
 /* Navigation --------------------------------------------------------------- */
@@ -308,6 +536,8 @@ const goToSpread = (index) => {
   renderSpread();
   if (state.fitMode === "manual") layoutSpread();
   else applyFit();
+  updateThumbnailHighlight();
+  reportProgress();
 };
 
 const nextSpread = () => goToSpread(state.spreadIndex + 1);
@@ -386,6 +616,7 @@ const syncToolbar = () => {
     const pressed =
       (button.dataset.command === "toggle-double" && state.doublePage) ||
       (button.dataset.command === "toggle-rtl" && state.rightToLeft) ||
+      (button.dataset.command === "toggle-thumbnails" && state.thumbnailsVisible) ||
       (button.dataset.command === "fit-screen" && state.fitMode === "screen");
     button.setAttribute("aria-pressed", String(Boolean(pressed)));
   }
@@ -413,7 +644,7 @@ const setFullScreen = async (value) => {
   if (value === undefined ? true : value !== current) await api.toggleFullscreen();
 };
 
-const runCommand = (command) => {
+const runCommand = async (command) => {
   switch (command) {
     case "open-file":
       void openViaDialog(false);
@@ -495,6 +726,28 @@ const runCommand = (command) => {
       return;
     case "show-help":
       helpDialog.showModal();
+      return;
+    case "toggle-thumbnails": {
+      // The main process echoes the new preferences back, so the strip and the
+      // menu checkbox always agree.
+      const preferences = await api.setPreference("showThumbnails", !state.thumbnailsVisible);
+      if (preferences !== null && typeof preferences === "object") {
+        state.preferences = preferences;
+        applyPreferences();
+      }
+      return;
+    }
+    case "add-bookmark":
+      void openBookmarksDialog();
+      return;
+    case "show-bookmarks":
+      void openBookmarksDialog();
+      return;
+    case "show-recent":
+      void openRecentDialog();
+      return;
+    case "clear-history":
+      void api.clearHistory().then(() => refreshLibrary());
       return;
     default:
   }
@@ -662,6 +915,19 @@ const wireDialogs = () => {
     gotoDialog.close();
     if (Number.isFinite(value) && value >= 1) goToPage(value);
   });
+
+  document.getElementById("bookmark-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void addBookmarkAtCurrentPage();
+  });
+  document.getElementById("bookmarks-close").addEventListener("click", () => bookmarksDialog.close());
+  document.getElementById("recent-close").addEventListener("click", () => recentDialog.close());
+  document.getElementById("recent-clear").addEventListener("click", async () => {
+    await api.clearHistory();
+    await refreshLibrary();
+    renderRecentList();
+    toast("History cleared");
+  });
 };
 
 const wireToolbar = () => {
@@ -715,12 +981,18 @@ const init = async () => {
   wireResize();
 
   api.onCommand(runCommand);
-  api.on("app:book-opened", applyBook);
+  api.on("app:book-opened", (book) => void applyBook(book));
   api.on("app:book-failed", (error) => {
     toast(error.message);
     api.reportError(error);
   });
   api.on("app:fullscreen", (value) => document.body.classList.toggle("fullscreen", Boolean(value)));
+  api.on("app:preferences", (preferences) => {
+    state.preferences = preferences;
+    applyPreferences();
+  });
+
+  await refreshLibrary();
 
   const book = await api.getBook();
   if (book !== null) await applyBook(book);

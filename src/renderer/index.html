@@ -23,6 +23,8 @@
       </p>
     </div>
 
+    <div id="thumbnails" hidden></div>
+
     <header id="toolbar">
       <button type="button" data-command="open-file">Open</button>
       <button type="button" data-command="open-folder">Folder</button>
@@ -41,6 +43,10 @@
       <button type="button" data-command="rotate-cw" title="Rotate right">&#8631;</button>
       <button type="button" data-command="toggle-double" title="Double page">2&#8203;up</button>
       <button type="button" data-command="toggle-rtl" title="Japanese reading (right to left)">RTL</button>
+      <button type="button" data-command="toggle-thumbnails" title="Page thumbnails (Ctrl+T)">&#9636;</button>
+      <button type="button" data-command="add-bookmark" title="Add bookmark (Ctrl+B)">&#9873;</button>
+      <button type="button" data-command="show-bookmarks" title="Bookmarks">&#9776;</button>
+      <button type="button" data-command="show-recent" title="Recent books">&#8635;</button>
       <span class="spacer"></span>
       <button type="button" data-command="toggle-fullscreen" title="Full screen">&#9974;</button>
       <button type="button" data-command="show-help" title="Keyboard shortcuts">?</button>
@@ -53,6 +59,30 @@
       <span id="mode-label"></span>
       <span id="zoom-label"></span>
     </footer>
+
+    <dialog id="bookmarks-dialog">
+      <h2>Bookmarks</h2>
+      <ul id="bookmark-list"></ul>
+      <p class="empty-note" id="bookmark-empty" hidden>No bookmarks in this book yet.</p>
+      <form method="dialog" id="bookmark-form">
+        <label for="bookmark-name">Name for page <span id="bookmark-page"></span></label>
+        <input id="bookmark-name" type="text" autocomplete="off" placeholder="Chapter 2" />
+        <p class="dialog-actions">
+          <button type="button" id="bookmarks-close">Close</button>
+          <button type="submit" id="bookmark-add">Add bookmark</button>
+        </p>
+      </form>
+    </dialog>
+
+    <dialog id="recent-dialog">
+      <h2>Recent books</h2>
+      <ul id="recent-list"></ul>
+      <p class="empty-note" id="recent-empty" hidden>Nothing read yet.</p>
+      <p class="dialog-actions">
+        <button type="button" id="recent-clear">Clear history</button>
+        <button type="button" id="recent-close">Close</button>
+      </p>
+    </dialog>
 
     <dialog id="goto-dialog">
       <form method="dialog">

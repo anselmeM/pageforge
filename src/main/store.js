@@ -1,0 +1,202 @@
+/**
+ * Persistent library: recent books, per-book bookmarks, and preferences.
+ *
+ * One JSON document under the app's user-data directory. Writes are atomic
+ * (temp file plus rename) and serialised, so a crash mid-write cannot leave a
+ * half-written library behind. A corrupt file is preserved under a new name and
+ * reported rather than silently discarded, because it is the only copy of the
+ * user's bookmarks.
+ */
+
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+import {
+  DEFAULT_PREFERENCES,
+  bookmarksFor,
+  normalizePathKey,
+  pruneBookmarks,
+  upsertHistory,
+} from "../core/library.js";
+
+const FILE_NAME = "library.json";
+
+const emptyLibrary = () => ({
+  version: 1,
+  preferences: { ...DEFAULT_PREFERENCES },
+  history: [],
+  bookmarks: {},
+});
+
+/** Accept only the shapes this module writes; anything else falls back. */
+const sanitize = (value) => {
+  const library = emptyLibrary();
+  if (value === null || typeof value !== "object") return library;
+  if (value.preferences !== null && typeof value.preferences === "object") {
+    for (const key of Object.keys(DEFAULT_PREFERENCES)) {
+      if (typeof value.preferences[key] === typeof DEFAULT_PREFERENCES[key]) {
+        library.preferences[key] = value.preferences[key];
+      }
+    }
+  }
+  if (Array.isArray(value.history)) {
+    library.history = value.history.filter(
+      (item) => item !== null && typeof item === "object" && typeof item.pathKey === "string",
+    );
+  }
+  if (value.bookmarks !== null && typeof value.bookmarks === "object") {
+    for (const [pathKey, list] of Object.entries(value.bookmarks)) {
+      if (!Array.isArray(list)) continue;
+      const bookmarks = list.filter(
+        (bookmark) =>
+          bookmark !== null &&
+          typeof bookmark === "object" &&
+          typeof bookmark.id === "string" &&
+          Number.isInteger(bookmark.page),
+      );
+      if (bookmarks.length > 0) library.bookmarks[pathKey] = bookmarks;
+    }
+  }
+  return library;
+};
+
+/**
+ * @param {{directory: string}} options
+ * @returns {Promise<object>} the store API
+ */
+export const createStore = async ({ directory }) => {
+  const file = join(directory, FILE_NAME);
+  await mkdir(directory, { recursive: true });
+
+  let library = emptyLibrary();
+  /** Set when the previous contents could not be read, so callers can report it. */
+  let loadProblem = null;
+
+  try {
+    library = sanitize(JSON.parse(await readFile(file, "utf8")));
+  } catch (cause) {
+    if (cause?.code !== "ENOENT") {
+      const preserved = `${file}.corrupt-${Date.now()}`;
+      try {
+        await rename(file, preserved);
+        loadProblem = `Library file could not be read (${cause.message}); the previous file was kept at ${preserved}.`;
+      } catch (renameError) {
+        loadProblem = `Library file could not be read (${cause.message}) and could not be preserved: ${renameError.message}.`;
+      }
+    }
+  }
+
+  let queue = Promise.resolve();
+  const persist = () => {
+    const snapshot = JSON.stringify(library, null, 2);
+    queue = queue.then(async () => {
+      const temporary = `${file}.tmp-${process.pid}`;
+      await writeFile(temporary, snapshot, "utf8");
+      await rename(temporary, file);
+    });
+    return queue;
+  };
+
+  const entryFor = (pathKey) => library.history.find((item) => item.pathKey === pathKey);
+
+  return {
+    loadProblem,
+    filePath: file,
+
+    snapshot() {
+      return structuredClone(library);
+    },
+
+    preferences() {
+      return { ...library.preferences };
+    },
+
+    history() {
+      return structuredClone(library.history);
+    },
+
+    /**
+     * Bookmarks for a book, in page order. Takes a path like every other
+     * method and normalises it, so callers never have to know the key format.
+     */
+    bookmarks(targetPath) {
+      return bookmarksFor(library.bookmarks, normalizePathKey(targetPath));
+    },
+
+    /** Remember an opened book without losing where the reader had got to. */
+    async recordOpen({ targetPath, displayName, kind, pages = 0 }) {
+      const pathKey = normalizePathKey(targetPath);
+      const previous = entryFor(pathKey);
+      const entry = {
+        pathKey,
+        path: targetPath,
+        displayName,
+        kind,
+        pages,
+        lastPage: previous?.lastPage ?? 1,
+        openedAt: new Date().toISOString(),
+      };
+      library.history = upsertHistory(library.history, entry);
+      library.bookmarks = pruneBookmarks(library.bookmarks, library.history);
+      await persist();
+      return structuredClone(entry);
+    },
+
+    /** Record reading position. The page is clamped when the book is reopened. */
+    async recordProgress(targetPath, page) {
+      const pathKey = normalizePathKey(targetPath);
+      const entry = entryFor(pathKey);
+      if (entry === undefined || !Number.isInteger(page) || page < 1) return false;
+      if (entry.lastPage === page) return false;
+      entry.lastPage = page;
+      entry.readAt = new Date().toISOString();
+      await persist();
+      return true;
+    },
+
+    async addBookmark(targetPath, page, name) {
+      const pathKey = normalizePathKey(targetPath);
+      const bookmark = {
+        id: randomUUID(),
+        page,
+        name: name?.trim() === "" || name === undefined ? `Page ${page}` : name.trim(),
+        createdAt: new Date().toISOString(),
+      };
+      library.bookmarks[pathKey] = [...(library.bookmarks[pathKey] ?? []), bookmark];
+      await persist();
+      return structuredClone(bookmark);
+    },
+
+    async removeBookmark(id) {
+      let removed = false;
+      for (const [pathKey, list] of Object.entries(library.bookmarks)) {
+        const remaining = list.filter((bookmark) => bookmark.id !== id);
+        if (remaining.length === list.length) continue;
+        removed = true;
+        if (remaining.length === 0) delete library.bookmarks[pathKey];
+        else library.bookmarks[pathKey] = remaining;
+      }
+      if (removed) await persist();
+      return removed;
+    },
+
+    async clearHistory() {
+      library.history = [];
+      library.bookmarks = {};
+      await persist();
+    },
+
+    async setPreference(key, value) {
+      if (!(key in DEFAULT_PREFERENCES)) throw new Error(`Unknown preference: ${key}`);
+      library.preferences[key] = value;
+      await persist();
+      return { ...library.preferences };
+    },
+
+    /** Wait for every queued write to reach disk. */
+    async flush() {
+      await queue;
+    },
+  };
+};

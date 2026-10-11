@@ -73,6 +73,20 @@ protocol.registerSchemesAsPrivileged([
 let session = null;
 let documentPath = null;
 let mainWindow = null;
+/** The persistent library, created once the app is ready. */
+let library = null;
+
+const ensureLibrary = async () => {
+  if (library !== null) return library;
+  const { createStore } = await import("./store.js");
+  // PAGEFORGE_STATE_DIR keeps tests and smoke runs away from the real library.
+  const directory = process.env.PAGEFORGE_STATE_DIR ?? app.getPath("userData");
+  library = await createStore({ directory });
+  return library;
+};
+
+/** Path of whatever is open, for per-book lookups. */
+const currentTargetPath = () => session?.targetPath ?? documentPath;
 
 const isSmokeRun = process.argv.includes("--smoke");
 let smokeReported = false;
@@ -80,22 +94,18 @@ let smokeReported = false;
 /** `--capture=<file>` writes a PNG of the rendered window and exits. */
 const captureArgument = process.argv.find((argument) => argument.startsWith("--capture="));
 const capturePath = captureArgument === undefined ? null : captureArgument.slice("--capture=".length);
-const captureCommandArgument = process.argv.find((argument) => argument.startsWith("--capture-command="));
-const captureCommand =
-  captureCommandArgument === undefined ? null : captureCommandArgument.slice("--capture-command=".length);
+/** `--command=<cmd>` runs one viewer command once the first book is open. */
+const commandArgument = process.argv.find((argument) => argument.startsWith("--command="));
+const startupCommand = commandArgument === undefined ? null : commandArgument.slice("--command=".length);
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const takeCapture = async () => {
-  if (captureCommand !== null) {
-    send("app:command", captureCommand);
-    await delay(600);
-  }
   // One extra frame after the last layout so the capture is not taken mid-paint.
   await delay(700);
   const image = await mainWindow.webContents.capturePage();
   await writeFile(capturePath, image.toPNG());
-  process.stdout.write(`${JSON.stringify({ capture: capturePath, command: captureCommand })}\n`);
+  process.stdout.write(`${JSON.stringify({ capture: capturePath, command: startupCommand })}\n`);
 };
 
 const positionalTarget = () =>
@@ -148,11 +158,30 @@ const loadDocument = async (targetPath) => {
 
 const loadTarget = async (targetPath) => {
   await closeSession();
-  if (PDF_EXTENSIONS.has(extname(targetPath).toLowerCase())) return loadDocument(targetPath);
+  const store = await ensureLibrary();
+  if (PDF_EXTENSIONS.has(extname(targetPath).toLowerCase())) {
+    const book = await loadDocument(targetPath);
+    const entry = await store.recordOpen({
+      targetPath,
+      displayName: book.displayName,
+      kind: book.kind,
+      pages: 0,
+    });
+    // A PDF's page count is only known once the viewer has parsed it, so the
+    // recorded page is passed through unclamped and the viewer clamps it.
+    return { ...book, resumePage: entry.lastPage, preferences: store.preferences() };
+  }
   const { openTarget } = await reader();
   const opened = await openTarget(targetPath);
   session = opened;
-  return bookPayload(opened);
+  const book = bookPayload(opened);
+  const entry = await store.recordOpen({
+    targetPath,
+    displayName: book.displayName,
+    kind: book.kind,
+    pages: book.pages.length,
+  });
+  return { ...book, resumePage: entry.lastPage, preferences: store.preferences() };
 };
 
 /** Render a failure for the viewer without leaking a stack trace. */
@@ -200,9 +229,23 @@ const setFullScreen = (value) => {
   return value;
 };
 
-const buildMenu = () =>
-  Menu.buildFromTemplate([
-    {
+/**
+ * Change a preference and keep the menu checkbox, the store and the viewer in
+ * step. The viewer is told rather than being asked to remember.
+ */
+const applyPreference = async (key, value) => {
+  const store = await ensureLibrary();
+  const preferences = await store.setPreference(key, value);
+  const item = Menu.getApplicationMenu()?.getMenuItemById(
+    key === "showThumbnails" ? "show-thumbnails" : "resume-last-page",
+  );
+  if (item !== undefined && item !== null) item.checked = value;
+  send("app:preferences", preferences);
+  return preferences;
+};
+
+const buildMenu = (preferences) =>
+  Menu.buildFromTemplate([    {
       label: "&File",
       submenu: [
         { label: "Open Comic…", accelerator: "CmdOrCtrl+O", click: () => send("app:command", "open-file") },
@@ -225,6 +268,23 @@ const buildMenu = () =>
       ],
     },
     {
+      label: "&Library",
+      submenu: [
+        { label: "Add Bookmark…", accelerator: "CmdOrCtrl+B", click: () => send("app:command", "add-bookmark") },
+        { label: "Bookmarks…", accelerator: "CmdOrCtrl+Shift+B", click: () => send("app:command", "show-bookmarks") },
+        { type: "separator" },
+        { label: "Recent Books…", accelerator: "CmdOrCtrl+R", click: () => send("app:command", "show-recent") },
+        { type: "separator" },
+        {
+          id: "resume-last-page",
+          label: "Resume Last Page",
+          type: "checkbox",
+          checked: preferences.resumeLastPage,
+          click: (item) => void applyPreference("resumeLastPage", item.checked),
+        },
+      ],
+    },
+    {
       label: "&View",
       submenu: [
         {
@@ -233,6 +293,14 @@ const buildMenu = () =>
           type: "checkbox",
           accelerator: "F11",
           click: (item) => setFullScreen(item.checked),
+        },
+        {
+          id: "show-thumbnails",
+          label: "Page Thumbnails",
+          type: "checkbox",
+          accelerator: "CmdOrCtrl+T",
+          checked: preferences.showThumbnails,
+          click: (item) => void applyPreference("showThumbnails", item.checked),
         },
         { type: "separator" },
         {
@@ -399,6 +467,48 @@ const registerIpc = () => {
     () => mainWindow !== null && !mainWindow.isDestroyed() && mainWindow.isFullScreen(),
   );
   ipcMain.handle("shell:open-external", (_event, url) => shell.openExternal(url));
+  // The viewer applies this itself, before it reports readiness, so an
+  // automated run measures the state after the command rather than before it.
+  ipcMain.handle("app:startup-command", () => startupCommand);
+
+  ipcMain.handle("library:get", async () => {
+    const store = await ensureLibrary();
+    const targetPath = currentTargetPath();
+    return {
+      preferences: store.preferences(),
+      history: store.history(),
+      bookmarks: targetPath === null || targetPath === undefined ? [] : store.bookmarks(targetPath),
+      loadProblem: store.loadProblem,
+    };
+  });
+  ipcMain.handle("library:progress", async (_event, targetPath, page) => {
+    const store = await ensureLibrary();
+    return store.recordProgress(targetPath, page);
+  });
+  ipcMain.handle("library:bookmark:add", async (_event, targetPath, page, name) => {
+    const store = await ensureLibrary();
+    return store.addBookmark(targetPath, page, name);
+  });
+  ipcMain.handle("library:bookmark:remove", async (_event, id) => {
+    const store = await ensureLibrary();
+    return store.removeBookmark(id);
+  });
+  ipcMain.handle("library:history:clear", async () => {
+    const store = await ensureLibrary();
+    await store.clearHistory();
+    return true;
+  });
+  ipcMain.handle("library:preference:set", async (_event, key, value) => {
+    const preferences = await applyPreference(key, value);
+    return preferences;
+  });
+  ipcMain.handle("library:open", async (_event, targetPath) => {
+    try {
+      return { ok: true, book: await loadTarget(targetPath) };
+    } catch (error) {
+      return { ok: false, error: friendlyError(error) };
+    }
+  });
   ipcMain.on("app:ready", async (_event, payload) => {
     if (smokeReported) return;
     if (isSmokeRun) {
@@ -428,7 +538,8 @@ const registerIpc = () => {
 app.whenReady().then(async () => {
   handleProtocol();
   registerIpc();
-  Menu.setApplicationMenu(buildMenu());
+  const store = await ensureLibrary();
+  Menu.setApplicationMenu(buildMenu(store.preferences()));
   await createWindow();
 
   const target = positionalTarget();
@@ -454,6 +565,8 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   void closeSession();
+  // Library writes are queued; give the last one a chance to land.
+  if (library !== null) app.once("will-quit", () => void library.flush());
 });
 
 if (isSmokeRun) {

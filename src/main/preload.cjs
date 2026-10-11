@@ -12,6 +12,23 @@ contextBridge.exposeInMainWorld("pageforge", {
   openFolderDialog: () => ipcRenderer.invoke("dialog:open-folder"),
   /** Open a known absolute path. Returns { ok, book } or { ok: false, error }. */
   openBook: (targetPath) => ipcRenderer.invoke("book:open", targetPath),
+
+  /** Preferences, recent books, and this book's bookmarks. */
+  getLibrary: () => ipcRenderer.invoke("library:get"),
+  /** Record the reading position. Resolves false when nothing changed. */
+  setProgress: (targetPath, page) => ipcRenderer.invoke("library:progress", targetPath, page),
+  /** Add a named bookmark for a page. */
+  addBookmark: (targetPath, page, name) => ipcRenderer.invoke("library:bookmark:add", targetPath, page, name),
+  /** Remove a bookmark by id. */
+  removeBookmark: (id) => ipcRenderer.invoke("library:bookmark:remove", id),
+  /** Forget every recent book and its bookmarks. */
+  clearHistory: () => ipcRenderer.invoke("library:history:clear"),
+  /** Change a preference; the main process echoes the result back. */
+  setPreference: (key, value) => ipcRenderer.invoke("library:preference:set", key, value),
+  /** Open a recent book by path. Returns { ok, book } or { ok: false, error }. */
+  openRecent: (targetPath) => ipcRenderer.invoke("library:open", targetPath),
+  /** The one-off command requested on the command line, or null. */
+  getStartupCommand: () => ipcRenderer.invoke("app:startup-command"),
   /** The currently open book, or null. */
   getBook: () => ipcRenderer.invoke("book:get"),
   /** Close the open book and release its file handle. */
@@ -30,7 +47,7 @@ contextBridge.exposeInMainWorld("pageforge", {
   },
   /** Subscribe to a main-process push. Returns an unsubscribe function. */
   on: (channel, handler) => {
-    const allowed = ["app:book-opened", "app:book-failed", "app:fullscreen"];
+    const allowed = ["app:book-opened", "app:book-failed", "app:fullscreen", "app:preferences"];
     if (!allowed.includes(channel)) throw new Error(`Unsupported channel: ${channel}`);
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on(channel, listener);

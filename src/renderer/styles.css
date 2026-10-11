@@ -29,7 +29,136 @@ body {
 
 body {
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  /* DOM order is stage, thumbnails, toolbar, status bar: the reading area takes
+     the leftover height and everything else keeps its natural size. */
+  grid-template-rows: 1fr auto auto auto;
+}
+
+/* Thumbnail strip ---------------------------------------------------------- */
+
+#thumbnails {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 8px;
+  background: #16161c;
+  border-top: 1px solid var(--chrome-border);
+  scrollbar-width: thin;
+}
+
+#thumbnails[hidden] {
+  display: none;
+}
+
+#thumbnails .thumb {
+  flex: 0 0 auto;
+  width: 74px;
+  height: 104px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #22222b;
+  border: 1px solid var(--chrome-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#thumbnails .thumb img,
+#thumbnails .thumb canvas {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+
+#thumbnails .thumb.current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+#thumbnails .thumb .thumb-number {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* Library dialogs ---------------------------------------------------------- */
+
+#bookmark-list,
+#recent-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 320px;
+  min-width: 420px;
+  overflow-y: auto;
+}
+
+#bookmark-list li,
+#recent-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 4px;
+}
+
+#bookmark-list li:hover,
+#recent-list li:hover {
+  background: #26262f;
+}
+
+#bookmark-list button.jump,
+#recent-list button.jump {
+  flex: 1;
+  text-align: left;
+  padding: 4px 6px;
+  color: var(--text);
+  background: none;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+#bookmark-list button.remove {
+  padding: 3px 8px;
+  color: var(--muted);
+  background: #24242d;
+  border: 1px solid var(--chrome-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#recent-list .meta,
+#bookmark-list .meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.empty-note {
+  color: var(--muted);
+}
+
+#bookmark-form {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--chrome-border);
+}
+
+#bookmark-form label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+}
+
+#bookmark-name {
+  width: 100%;
+  padding: 6px 8px;
+  color: var(--text);
+  background: #14141a;
+  border: 1px solid var(--chrome-border);
+  border-radius: 5px;
+  font: inherit;
 }
 
 /* Toolbar ------------------------------------------------------------------ */
@@ -81,6 +210,10 @@ body {
   overflow: hidden;
   display: grid;
   place-items: center;
+  /* Without this the 1fr row refuses to shrink below the page's height, which
+     squeezes the thumbnail strip and the chrome off the bottom of the window. */
+  min-height: 0;
+  min-width: 0;
 }
 
 #spread {

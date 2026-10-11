@@ -22,11 +22,11 @@ const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const electronPath = require("electron");
 
-const runElectron = (args, timeoutMs = 90_000) =>
+const runElectron = (args, { timeoutMs = 90_000, env: extraEnv = {} } = {}) =>
   new Promise((resolve) => {
     // See scripts/launch.mjs: an inherited ELECTRON_RUN_AS_NODE would start
     // Electron as plain Node, where the electron module has no API.
-    const env = { ...process.env };
+    const env = { ...process.env, ...extraEnv };
     delete env.ELECTRON_RUN_AS_NODE;
     const child = spawn(electronPath, args, {
       cwd: projectRoot,
@@ -64,17 +64,32 @@ const parseReport = (stdout) => {
 };
 
 const workspace = await mkdtemp(join(tmpdir(), "pageforge-smoke-"));
+/** Keeps the run away from the real library. */
+const stateDirectory = join(workspace, "state");
 const failures = [];
 const skipped = [];
 
+/** Read `a.b.c` out of the report, so expectations can name nested fields. */
+const valueAt = (object, path) =>
+  path.split(".").reduce((value, key) => (value === null || value === undefined ? value : value[key]), object);
+
+const check = (label, report, expectations) => {
+  assert.equal(report.smoke, "ok", `${label}: app reported ${JSON.stringify(report)}`);
+  for (const [key, expected] of Object.entries(expectations)) {
+    assert.deepEqual(valueAt(report, key), expected, `${label}: ${key}`);
+  }
+};
+
 try {
   const fixture = await writeFixture(workspace);
+  const env = { PAGEFORGE_STATE_DIR: stateDirectory };
 
   const cases = [
     {
       label: "CBZ",
       target: fixture.archive,
-      expected: { pages: 4, format: "png", width: 600, height: 900 },
+      args: ["--command=toggle-thumbnails"],
+      expected: { pages: 4, format: "png", width: 600, height: 900, thumbnails: 4, startPage: 1 },
     },
     {
       label: "CB7",
@@ -99,7 +114,7 @@ try {
       continue;
     }
     process.stdout.write(`smoke: launching electron against ${testCase.label}\n`);
-    const result = await runElectron([".", "--smoke", testCase.target]);
+    const result = await runElectron([".", "--smoke", ...(testCase.args ?? []), testCase.target], { env });
     const report = parseReport(result.stdout);
 
     try {
@@ -108,21 +123,51 @@ try {
           `no report (exit=${result.code} signal=${result.signal})\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`,
         );
       }
-      assert.equal(report.smoke, "ok", `app reported ${JSON.stringify(report)}`);
-      assert.equal(report.pages, testCase.expected.pages, `${testCase.label} page count`);
-      assert.equal(report.spreads, testCase.expected.pages, `${testCase.label} spread count`);
-      assert.equal(report.spreadPages, 1, `${testCase.label} first spread size`);
-      assert.equal(report.renderedPages, 1, `${testCase.label} rendered page count`);
-      assert.equal(report.firstPageRendered, true, `${testCase.label} first page rendered`);
-      assert.equal(report.firstPageFormat, testCase.expected.format, `${testCase.label} first page format`);
-      assert.equal(report.firstPageProbe.width, testCase.expected.width, `${testCase.label} first page width`);
-      assert.equal(report.firstPageProbe.height, testCase.expected.height, `${testCase.label} first page height`);
+      check(testCase.label, report, {
+        pages: testCase.expected.pages,
+        spreads: testCase.expected.pages,
+        spreadPages: 1,
+        renderedPages: 1,
+        firstPageRendered: true,
+        firstPageFormat: testCase.expected.format,
+        "firstPageProbe.width": testCase.expected.width,
+        "firstPageProbe.height": testCase.expected.height,
+        ...(testCase.expected.thumbnails === undefined ? {} : { thumbnails: testCase.expected.thumbnails }),
+        ...(testCase.expected.startPage === undefined ? {} : { startPage: testCase.expected.startPage }),
+      });
       process.stdout.write(
         `smoke: ${testCase.label} OK — ${report.pages} pages, first page ${report.firstPageFormat} ${report.firstPageProbe.width}x${report.firstPageProbe.height} rendered\n`,
       );
     } catch (error) {
       failures.push(`${testCase.label}: ${error.message}`);
     }
+  }
+
+  /* Library persistence: seed a position and a bookmark, then reopen. */
+  process.stdout.write("smoke: checking resume, bookmarks and history across restarts\n");
+  try {
+    const { createStore } = await import("../src/main/store.js");
+    const store = await createStore({ directory: stateDirectory });
+    await store.recordOpen({
+      targetPath: fixture.archive,
+      displayName: "sample.cbz",
+      kind: "archive",
+      pages: 4,
+    });
+    await store.recordProgress(fixture.archive, 3);
+    await store.addBookmark(fixture.archive, 2, "Chapter 1");
+    await store.flush();
+
+    const result = await runElectron([".", "--smoke", fixture.archive], { env });
+    const report = parseReport(result.stdout);
+    if (report === null) {
+      throw new Error(`no report on reopen (exit=${result.code})\n${result.stdout}\n${result.stderr}`);
+    }
+    check("REOPEN", report, { pages: 4, startPage: 3, bookmarkCount: 1 });
+    assert.equal(report.historyCount >= 1, true, "REOPEN: history was not kept");
+    process.stdout.write(`smoke: REOPEN OK — resumed at page ${report.startPage} with ${report.bookmarkCount} bookmark\n`);
+  } catch (error) {
+    failures.push(`REOPEN: ${error.message}`);
   }
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
