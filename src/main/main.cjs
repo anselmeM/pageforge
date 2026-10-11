@@ -231,6 +231,13 @@ const setFullScreen = (value) => {
   return value;
 };
 
+/** Preferences that have a menu checkbox, so the two can never disagree. */
+const MENU_ITEM_FOR_PREFERENCE = {
+  showThumbnails: "show-thumbnails",
+  resumeLastPage: "resume-last-page",
+  magnifierVisible: "magnifier",
+};
+
 /**
  * Change a preference and keep the menu checkbox, the store and the viewer in
  * step. The viewer is told rather than being asked to remember.
@@ -238,9 +245,7 @@ const setFullScreen = (value) => {
 const applyPreference = async (key, value) => {
   const store = await ensureLibrary();
   const preferences = await store.setPreference(key, value);
-  const item = Menu.getApplicationMenu()?.getMenuItemById(
-    key === "showThumbnails" ? "show-thumbnails" : "resume-last-page",
-  );
+  const item = Menu.getApplicationMenu()?.getMenuItemById(MENU_ITEM_FOR_PREFERENCE[key]);
   if (item !== undefined && item !== null) item.checked = value;
   send("app:preferences", preferences);
   return preferences;
@@ -328,12 +333,21 @@ const buildMenu = (preferences) =>
         { type: "separator" },
         { label: "Rotate Right", click: () => send("app:command", "rotate-cw") },
         { label: "Rotate Left", click: () => send("app:command", "rotate-ccw") },
+        { type: "separator" },
+        {
+          id: "magnifier",
+          label: "Magnifier",
+          type: "checkbox",
+          checked: preferences.magnifierVisible,
+          click: (item) => void applyPreference("magnifierVisible", item.checked),
+        },
+        { label: "Slideshow", click: () => send("app:command", "toggle-slideshow") },
       ],
     },
     {
       label: "&Help",
       submenu: [
-        { label: "Keyboard Shortcuts", click: () => send("app:command", "show-help") },
+        { label: "Keyboard Shortcuts…", click: () => send("app:command", "show-help") },
         {
           label: "About PageForge",
           click: () =>
@@ -502,6 +516,18 @@ const registerIpc = () => {
   ipcMain.handle("library:bookmark:remove", async (_event, id) => {
     const store = await ensureLibrary();
     return store.removeBookmark(id);
+  });
+  ipcMain.handle("shortcuts:get", async () => {
+    const store = await ensureLibrary();
+    return store.shortcuts();
+  });
+  ipcMain.handle("shortcuts:set", async (_event, command, slot, keyString) => {
+    const store = await ensureLibrary();
+    return store.setShortcut(command, slot, keyString);
+  });
+  ipcMain.handle("shortcuts:reset", async () => {
+    const store = await ensureLibrary();
+    return store.resetShortcuts();
   });
   ipcMain.handle("library:history:clear", async () => {
     const store = await ensureLibrary();

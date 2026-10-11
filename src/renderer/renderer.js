@@ -8,7 +8,16 @@
 
 import { IDENTITY_GAINS, averageChannelMeans, colorFilterParameters, computeWhiteBalanceGains } from "../core/color.js";
 import { clampScale, fitScale, zoomStep } from "../core/fit.js";
+import { lensPosition, magnifierSample } from "../core/magnifier.js";
 import { DEFAULT_PREFERENCES, describeHistoryEntry, resolveStartPage } from "../core/library.js";
+import {
+  COMMAND_LABELS,
+  REBINDABLE_COMMANDS,
+  DEFAULT_SHORTCUTS,
+  keyFromEvent,
+  normalizeShortcuts,
+  resolveCommand,
+} from "../core/shortcuts.js";
 import { buildSpreads, spreadIndexForPage, visualOrder } from "../core/spread.js";
 import { clampPan, panBounds, zoomAtPoint } from "../core/viewport.js";
 import { openPdfDocument, startPdfRender } from "./pdf.js";
@@ -46,6 +55,9 @@ const colorCurves = {
   b: document.querySelector("#pf-color feFuncB"),
 };
 const saturationMatrix = document.getElementById("pf-saturation");
+const magnifierEl = document.getElementById("magnifier");
+const magnifierContext = magnifierEl.getContext("2d");
+const shortcutList = document.getElementById("shortcut-list");
 
 /** Fallback size for pages whose header could not be parsed. */
 const UNKNOWN_PAGE_SIZE = { width: 1000, height: 1500 };
@@ -88,6 +100,12 @@ const state = {
   colorGainsByPage: new Map(),
   /** Page URLs already decoded ahead of the reader. */
   prefetched: new Set(),
+  /** Key bindings, refreshed from the main process. */
+  shortcuts: normalizeShortcuts(DEFAULT_SHORTCUTS),
+  /** Slot awaiting a key press in the shortcuts dialog, or null. */
+  capturing: null,
+  /** True while the slideshow is advancing pages. */
+  slideshowRunning: false,
 };
 
 /* Sizing ------------------------------------------------------------------- */
@@ -440,11 +458,15 @@ const reportReady = async () => {
     colorMode: state.preferences.colorMode,
     colorGains: { ...state.colorGains },
     nodeKinds: state.nodes.map((node) => node.kind),
+    magnifierVisible: state.preferences.magnifierVisible === true,
+    slideshowRunning: state.slideshowRunning,
+    nextPagePrimary: state.shortcuts["next-page"].primary,
   });
 };
 
 const applyBook = async (book) => {
   const token = (applyToken += 1);
+  stopSlideshow();
   state.pdf = null;
   state.preferences = book.preferences ?? state.preferences;
   if (book.kind === "pdf") {
@@ -759,6 +781,12 @@ const wirePreferences = () => {
     element.addEventListener("change", () => void writePreference(key, Number(element.value)));
   }
   document.getElementById("pref-close").addEventListener("click", () => preferencesDialog.close());
+  document.getElementById("shortcut-reset").addEventListener("click", async () => {
+    const shortcuts = await api.resetShortcuts();
+    if (shortcuts !== null && typeof shortcuts === "object") state.shortcuts = shortcuts;
+    renderShortcutList();
+    toast("Shortcuts reset to defaults");
+  });
   document.getElementById("pref-reset").addEventListener("click", async () => {
     for (const [key, value] of Object.entries(DEFAULT_PREFERENCES)) {
       await writePreference(key, value);
@@ -772,6 +800,149 @@ const wirePreferences = () => {
     }
     toast("Reading quality reset to defaults");
   });
+};
+
+/* Magnifier ---------------------------------------------------------------- */
+
+const hideMagnifier = () => {
+  if (!magnifierEl.hidden) magnifierEl.hidden = true;
+};
+
+/**
+ * Draw the region under the pointer into a lens.
+ *
+ * The source region is taken in bitmap space: the pointer offset is rotated
+ * back out of the display rotation, and the lens itself is rotated so the
+ * magnified content reads the same way as the page.
+ */
+const updateMagnifier = (pointer) => {
+  if (state.preferences.magnifierVisible !== true || state.book === null) {
+    hideMagnifier();
+    return;
+  }
+  const size = state.preferences.magnifierSize ?? 180;
+  const factor = state.preferences.magnifierFactor ?? 3;
+  const chosen = state.nodes.find((node) => {
+    const rect = node.element.getBoundingClientRect();
+    return (
+      pointer.x >= rect.left && pointer.x <= rect.right && pointer.y >= rect.top && pointer.y <= rect.bottom
+    );
+  });
+  if (chosen === undefined) {
+    hideMagnifier();
+    return;
+  }
+
+  const rect = chosen.element.getBoundingClientRect();
+  const natural = pageSize(chosen.page);
+  const sample = magnifierSample({
+    pointer,
+    rect,
+    natural,
+    rotation: state.rotation,
+    size,
+    factor,
+  });
+  if (sample === null) {
+    hideMagnifier();
+    return;
+  }
+
+  magnifierEl.width = size;
+  magnifierEl.height = size;
+  magnifierContext.clearRect(0, 0, size, size);
+  try {
+    magnifierContext.drawImage(
+      chosen.source ?? chosen.element,
+      sample.sourceX,
+      sample.sourceY,
+      sample.region,
+      sample.region,
+      0,
+      0,
+      size,
+      size,
+    );
+  } catch {
+    hideMagnifier();
+    return;
+  }
+
+  const { left, top } = lensPosition({ pointer, stageRect: stage.getBoundingClientRect(), size });
+  magnifierEl.style.left = `${left}px`;
+  magnifierEl.style.top = `${top}px`;
+  magnifierEl.style.transform = `rotate(${state.rotation}deg)`;
+  magnifierEl.hidden = false;
+};
+
+/** Show the lens at the middle of the reading area, until the pointer moves. */
+const showMagnifierAtCentre = () => {
+  const stageRect = stage.getBoundingClientRect();
+  updateMagnifier({
+    x: stageRect.left + stageRect.width / 2,
+    y: stageRect.top + stageRect.height / 2,
+  });
+};
+
+/* Slideshow ---------------------------------------------------------------- */
+
+let slideshowTimer = null;
+
+const stopSlideshow = () => {
+  if (slideshowTimer === null) return;
+  clearInterval(slideshowTimer);
+  slideshowTimer = null;
+  state.slideshowRunning = false;
+};
+
+const toggleSlideshow = () => {
+  if (state.slideshowRunning) {
+    stopSlideshow();
+    toast("Slideshow stopped");
+    return;
+  }
+  if (state.book === null) return;
+  const seconds = state.preferences.slideshowSeconds ?? 5;
+  stopSlideshow();
+  state.slideshowRunning = true;
+  slideshowTimer = setInterval(() => {
+    if (state.book === null || state.spreadIndex >= state.spreads.length - 1) {
+      stopSlideshow();
+      toast("Reached the end of the book");
+      return;
+    }
+    nextSpread();
+  }, seconds * 1000);
+  toast(`Slideshow: a page every ${seconds}s`);
+};
+
+/* Shortcuts dialog --------------------------------------------------------- */
+
+const renderShortcutList = () => {
+  shortcutList.replaceChildren();
+  for (const command of REBINDABLE_COMMANDS) {
+    const binding = state.shortcuts[command];
+    const item = document.createElement("li");
+    item.className = "shortcut-row";
+    const label = document.createElement("span");
+    label.className = "shortcut-label";
+    label.textContent = COMMAND_LABELS[command];
+    item.append(label);
+    for (const slot of ["primary", "secondary"]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "shortcut-key";
+      const capturing = state.capturing?.command === command && state.capturing?.slot === slot;
+      if (capturing) button.classList.add("capturing");
+      button.textContent = capturing ? "Press a key…" : (binding[slot] ?? "unbound");
+      button.addEventListener("click", () => {
+        state.capturing = { command, slot };
+        renderShortcutList();
+      });
+      item.append(button);
+    }
+    shortcutList.append(item);
+  }
 };
 
 /* Navigation --------------------------------------------------------------- */
@@ -973,7 +1144,16 @@ const runCommand = async (command) => {
       void setFullScreen(false);
       return;
     case "show-help":
+      renderShortcutList();
       helpDialog.showModal();
+      return;
+    case "toggle-magnifier":
+      await writePreference("magnifierVisible", !state.preferences.magnifierVisible);
+      if (state.preferences.magnifierVisible === true) showMagnifierAtCentre();
+      else hideMagnifier();
+      return;
+    case "toggle-slideshow":
+      toggleSlideshow();
       return;
     case "toggle-thumbnails": {
       // The main process echoes the new preferences back, so the strip and the
@@ -1008,72 +1188,32 @@ const runCommand = async (command) => {
 /* Input -------------------------------------------------------------------- */
 
 const wireKeyboard = () => {
-  window.addEventListener("keydown", (event) => {
-    if (event.target instanceof HTMLInputElement) return;
-    if (event.ctrlKey || event.metaKey) {
-      if (event.key === "g" || event.key === "G") {
+  window.addEventListener("keydown", async (event) => {
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+
+    // Rebinding captures the next key, whatever it is.
+    if (state.capturing !== null) {
+      event.preventDefault();
+      const { command, slot } = state.capturing;
+      state.capturing = null;
+      const keyString = event.key === "Escape" ? null : keyFromEvent(event);
+      const shortcuts = await api.setShortcut(command, slot, keyString);
+      if (shortcuts !== null && typeof shortcuts === "object") state.shortcuts = shortcuts;
+      renderShortcutList();
+      return;
+    }
+
+    const command = resolveCommand(state.shortcuts, keyFromEvent(event));
+    if (command === null) {
+      // Menu-owned accelerators arrive as commands rather than through here.
+      if ((event.ctrlKey || event.metaKey) && (event.key === "g" || event.key === "G")) {
         event.preventDefault();
         openGotoDialog();
       }
       return;
     }
-    switch (event.key) {
-      case "ArrowRight":
-      case "PageDown":
-      case " ":
-        nextSpread();
-        break;
-      case "ArrowLeft":
-      case "PageUp":
-        previousSpread();
-        break;
-      case "Home":
-        goToPage(1);
-        break;
-      case "End":
-        goToPage(state.book === null ? 1 : state.book.pages.length);
-        break;
-      case "+":
-      case "=":
-        zoomIn();
-        break;
-      case "-":
-      case "_":
-        zoomOut();
-        break;
-      case "0":
-        actualSize();
-        break;
-      case "f":
-      case "F":
-        setFitMode("screen");
-        break;
-      case "w":
-      case "W":
-        setFitMode("width");
-        break;
-      case "h":
-      case "H":
-        setFitMode("height");
-        break;
-      case "d":
-      case "D":
-        toggleDoublePage();
-        break;
-      case "j":
-      case "J":
-        toggleRightToLeft();
-        break;
-      case "r":
-        rotate(90);
-        break;
-      case "R":
-        rotate(-90);
-        break;
-      default:
-        return;
-    }
     event.preventDefault();
+    await runCommand(command);
   });
 };
 
@@ -1141,6 +1281,20 @@ const wirePointer = () => {
     state.lastDragMoved = drag.moved;
     stage.releasePointerCapture?.(event.pointerId);
   });
+};
+
+const wireMagnifier = () => {
+  let frame = null;
+  let last = null;
+  stage.addEventListener("pointermove", (event) => {
+    last = { x: event.clientX, y: event.clientY };
+    if (frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      if (last !== null) updateMagnifier(last);
+    });
+  });
+  stage.addEventListener("pointerleave", () => hideMagnifier());
 };
 
 const wireZones = () => {
@@ -1226,6 +1380,7 @@ const init = async () => {
   wireKeyboard();
   wireWheel();
   wirePointer();
+  wireMagnifier();
   wireZones();
   wireDialogs();
   wirePreferences();
@@ -1246,6 +1401,8 @@ const init = async () => {
   });
 
   await refreshLibrary();
+  state.shortcuts = normalizeShortcuts(await api.getShortcuts());
+  renderShortcutList();
 
   const book = await api.getBook();
   if (book !== null) await applyBook(book);

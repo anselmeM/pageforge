@@ -8,7 +8,7 @@ CDisplayEx 1.10.33 (its release notes, its translation catalog, and its installe
 file inventory on this machine). It shares no code, assets, or branding with
 that product, and it does not read or modify CDisplayEx's files.
 
-## Status: milestone 4 — reading quality
+## Status: milestone 5 — the original objective, complete
 
 Working today:
 
@@ -32,10 +32,33 @@ Working today:
 - **Colour correction** (off, estimated per page, or manual gamma and colour boost),
   **scaling quality** (nearest, linear, high quality), and pages **decoded ahead**
   of the reader
+- **Magnifier** lens that follows the pointer, an **automatic slideshow**, and
+  **rebindable primary and secondary** keyboard shortcuts
 
-Not implemented yet (deliberately deferred): CBT/TAR archives, DjVu and TIFF/AVIF
-decoding, a true Lanczos kernel, perceptual vibrance, configurable keyboard
-shortcuts, portable configuration.
+Not implemented, each for a stated reason: CBT/TAR archives and DjVu (format work
+not yet done), a true Lanczos kernel and perceptual vibrance (the settings say what
+they actually do instead), "Fit Landscape"/"Fit Portrait" (semantics never
+observed), and portable configuration.
+
+## Magnifier, slideshow and shortcuts
+
+The magnifier samples the page bitmap under the pointer and draws it into a round
+lens. Because a pointer offset measured on screen is not a bitmap offset once the
+page is rotated, the display rotation is undone before sampling, and the lens is
+rotated back so the magnified content reads the same way as the page. Toggling it
+on places the lens at the middle of the page until the pointer moves, so the
+feature is visible rather than invisible-until-you-hover.
+
+The slideshow advances one spread at a time on an interval and stops at the end of
+the book, or as soon as a different book is opened.
+
+Shortcuts are stored per command in a primary and a secondary slot, and can be
+reassigned in the Keyboard Shortcuts dialog: click a key, press a new one, or press
+`Esc` to leave the slot unbound. **A key can only mean one thing** — binding a key
+that another command already owns unbinds it there, and the dialog shows the result
+immediately. Commands that a menu accelerator already owns (open, bookmarks,
+thumbnails, recents, full screen, go-to-page, preferences) are deliberately not
+rebindable: two owners for one combination is how a key ends up firing twice.
 
 ## Reading quality
 
@@ -125,25 +148,32 @@ the situation and explains it rather than crashing obscurely.
 
 ## Keyboard
 
+Every key below is a **default**; all of them can be reassigned in the Keyboard
+Shortcuts dialog (`Help → Keyboard Shortcuts…`). Commands marked with a menu
+accelerator are not rebindable.
+
 | Key | Action |
 | --- | --- |
-| `→` `Space` `PageDown` | Next page |
+| `→` `Space` | Next page |
 | `←` `PageUp` | Previous page |
 | `Home` / `End` | First / last page |
-| `Ctrl`+`G` | Go to page |
-| `Ctrl`+`B` | Bookmarks for this book (add, jump, delete) |
-| `Ctrl`+`T` | Show or hide the thumbnail strip |
-| `Ctrl`+`,` | Reading quality settings |
-| `Ctrl`+`R` | Recent books |
 | `+` / `−` | Zoom in / out |
 | `0` | Actual size (100%) |
 | `F` / `W` / `H` | Fit screen / width / height |
 | `D` | Toggle double page |
 | `J` | Toggle right-to-left reading |
 | `R` / `Shift`+`R` | Rotate right / left |
-| `F11` | Full screen |
+| `M` | Toggle the magnifier |
+| `S` | Start or stop the slideshow |
 | `Ctrl`+wheel | Zoom at cursor |
 | Wheel | Scroll the page, then turn the page at the edge |
+| `Ctrl`+`O` / `Ctrl`+`Shift`+`O` | Open comic / folder |
+| `Ctrl`+`B` / `Ctrl`+`Shift`+`B` | Add a bookmark / list bookmarks |
+| `Ctrl`+`T` | Show or hide the thumbnail strip |
+| `Ctrl`+`R` | Recent books |
+| `Ctrl`+`G` | Go to page |
+| `Ctrl`+`,` | Reading quality settings |
+| `F11` | Full screen |
 
 ## Architecture
 
@@ -173,9 +203,10 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 88 unit, store, colour and reader tests
+npm test        # 117 unit, store, colour, magnifier, shortcut and reader tests
 npm run smoke   # launches Electron against CBZ, CB7, CBR and PDF fixtures, then
-                # proves resume, bookmarks, white balance and scaling quality
+                # proves resume, bookmarks, white balance, scaling, the magnifier,
+                # the slideshow and key rebinding
 npm run verify  # both
 ```
 
@@ -208,8 +239,11 @@ says what it does not know:
 | Landscape pages occupy their own spread | **Inferred** — a common rule for two-page scans, not verified against CDisplayEx |
 | First page shown alone in double-page mode | **Chosen default off**; some readers do this for covers, CDisplayEx's default is unverified |
 | "Fit Landscape" / "Fit Portrait" | **Not implemented**, because their exact semantics were not observed; guessing would be worse than omitting them |
-| Keyboard shortcuts and click zones | **Chosen** for this app; CDisplayEx's bindings were not inspected |
-| Resume, recent list, named bookmarks, thumbnail strip | **Observed** features in CDisplayEx (its translation catalog lists "Resume", "Open Recent", "Bookmarks", "Add", "Delete", "Show thumbnails") |
+| Resume, recent list, named bookmarks, thumbnail strip | **Observed** in CDisplayEx's catalog ("Resume", "Open Recent", "Bookmarks", "Show thumbnails") |
+| Magnifier, slideshow, primary **and secondary** rebindable shortcuts | **Observed** in CDisplayEx's catalog ("Magnifier", "Automatic Slideshow", "Slideshow interval", "Shortcut", "Secondary shortcuts") |
+| Keyboard shortcuts and click zones | **Chosen** bindings; CDisplayEx's own bindings were not inspected |
+| Menu-owned commands are not rebindable | **Chosen**; two owners for one key combination causes double firing |
+| CBT/TAR, DjVu | **Not implemented**; CDisplayEx supports both |
 | Books keyed by absolute path rather than by content digest | **Chosen** limitation; a moved or renamed book is treated as new |
 | Automatic colour correction, gamma, colour boost, scaling quality, page cache | **Observed** options in CDisplayEx's catalog ("Automatic color correction", "Gamma", "Vibrance", "Lanczos (better quality)", "Linear", "Nearest (faster)", "Cache pages") |
 | Colour boost implemented as a saturation matrix | **Chosen approximation**; a linear colour matrix cannot express perceptual vibrance |

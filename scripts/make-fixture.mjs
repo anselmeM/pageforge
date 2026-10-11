@@ -46,13 +46,23 @@ const chunk = (type, data) => {
   return Buffer.concat([length, body, crc]);
 };
 
-/** Solid-colour 8-bit RGB PNG. */
-export const pngBytes = (width, height, [red, green, blue] = [32, 64, 128]) => {
+/** Wrap raw scanlines in a minimal 8-bit RGB PNG. */
+const pngFromRaw = (width, height, raw) => {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8; // bit depth
   ihdr[9] = 2; // colour type: truecolour
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+};
+
+/** Solid-colour 8-bit RGB PNG. */
+export const pngBytes = (width, height, [red, green, blue] = [32, 64, 128]) => {
   const raw = Buffer.alloc(height * (1 + width * 3));
   for (let y = 0; y < height; y += 1) {
     const rowStart = y * (1 + width * 3);
@@ -64,12 +74,28 @@ export const pngBytes = (width, height, [red, green, blue] = [32, 64, 128]) => {
       raw[at + 2] = blue;
     }
   }
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk("IHDR", ihdr),
-    chunk("IDAT", deflateSync(raw)),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
+  return pngFromRaw(width, height, raw);
+};
+
+/**
+ * A page of fine diagonal stripes. Solid colours cannot show whether
+ * magnification or high-quality scaling is doing anything, so the visual checks
+ * use this instead.
+ */
+export const stripedPngBytes = (width, height, period = 4) => {
+  const raw = Buffer.alloc(height * (1 + width * 3));
+  for (let y = 0; y < height; y += 1) {
+    const rowStart = y * (1 + width * 3);
+    raw[rowStart] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const value = (x + y) % period < period / 2 ? 235 : 30;
+      const at = rowStart + 1 + x * 3;
+      raw[at] = value;
+      raw[at + 1] = value;
+      raw[at + 2] = value;
+    }
+  }
+  return pngFromRaw(width, height, raw);
 };
 
 /** 24-bit uncompressed BMP, bottom-up as the format requires. */
@@ -312,11 +338,17 @@ export const writeFixture = async (directory) => {
     zipBytes([{ name: CAST_PAGE.name, data: pngBytes(CAST_PAGE.width, CAST_PAGE.height, CAST_PAGE.colour) }]),
   );
 
+  const detail = join(directory, "detail.cbz");
+  await writeFile(
+    detail,
+    zipBytes([{ name: "page01.png", data: stripedPngBytes(600, 900) }]),
+  );
+
   const rarBytesResult = await rarBytes(FIXTURE_ENTRIES);
   const rar = rarBytesResult === null ? null : join(directory, "sample.cbr");
   if (rar !== null) await writeFile(rar, rarBytesResult);
 
-  return { archive, folder: join(directory, "folder"), sevenZip, rar, pdf, cast };
+  return { archive, folder: join(directory, "folder"), sevenZip, rar, pdf, cast, detail };
 };
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

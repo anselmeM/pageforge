@@ -21,12 +21,14 @@ import {
   pruneBookmarks,
   upsertHistory,
 } from "../core/library.js";
+import { DEFAULT_SHORTCUTS, REBINDABLE_COMMANDS, normalizeShortcuts, withShortcut } from "../core/shortcuts.js";
 
 const FILE_NAME = "library.json";
 
 const emptyLibrary = () => ({
   version: 1,
   preferences: { ...DEFAULT_PREFERENCES },
+  shortcuts: { ...DEFAULT_SHORTCUTS },
   history: [],
   bookmarks: {},
 });
@@ -37,6 +39,9 @@ const sanitize = (value) => {
   if (value === null || typeof value !== "object") return library;
   if (value.preferences !== null && typeof value.preferences === "object") {
     library.preferences = normalizePreferences(value.preferences);
+  }
+  if (value.shortcuts !== null && typeof value.shortcuts === "object") {
+    library.shortcuts = normalizeShortcuts(value.shortcuts);
   }
   if (Array.isArray(value.history)) {
     library.history = value.history.filter(
@@ -196,7 +201,26 @@ export const createStore = async ({ directory }) => {
       return { ...library.preferences };
     },
 
-    /** Wait for every queued write to reach disk. */
+    /** Current key bindings, with defaults filled in for anything unset. */
+    shortcuts() {
+      return normalizeShortcuts(library.shortcuts);
+    },
+
+    /** Bind one slot of one command; a null key clears it. */
+    async setShortcut(command, slot, keyString) {
+      if (!REBINDABLE_COMMANDS.includes(command)) throw new Error(`Unknown command: ${command}`);
+      if (slot !== "primary" && slot !== "secondary") throw new Error(`Unknown slot: ${slot}`);
+      library.shortcuts = withShortcut(normalizeShortcuts(library.shortcuts), command, slot, keyString);
+      await persist();
+      return normalizeShortcuts(library.shortcuts);
+    },
+
+    async resetShortcuts() {
+      library.shortcuts = { ...DEFAULT_SHORTCUTS };
+      await persist();
+      return normalizeShortcuts(library.shortcuts);
+    },
+
     async flush() {
       await queue;
     },

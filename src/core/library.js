@@ -26,6 +26,14 @@ export const DEFAULT_PREFERENCES = {
   /** How pages are scaled down to the window. */
   resampling: "linear",  /** Neighbouring pages decoded ahead of the reader; 0 disables prefetching. */
   prefetchPages: 4,
+  /** Show the magnifier lens while the pointer is over a page. */
+  magnifierVisible: false,
+  /** Lens size in pixels. */
+  magnifierSize: 180,
+  /** How much the lens magnifies. */
+  magnifierFactor: 3,
+  /** Seconds each page is shown during a slideshow. */
+  slideshowSeconds: 5,
 };
 
 /**
@@ -44,6 +52,10 @@ export const PREFERENCE_RULES = {
   // so it is not named after one.
   resampling: { type: "enum", values: ["nearest", "linear", "high"] },
   prefetchPages: { type: "number", min: 0, max: 16, integer: true },
+  magnifierVisible: { type: "boolean" },
+  magnifierSize: { type: "number", min: 60, max: 320, integer: true },
+  magnifierFactor: { type: "number", min: 1.5, max: 6 },
+  slideshowSeconds: { type: "number", min: 1, max: 120, integer: true },
 };
 
 /**

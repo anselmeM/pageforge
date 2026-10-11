@@ -34,6 +34,7 @@
         <span>Open a CBZ/ZIP comic or a folder of images.</span>
         <span class="hint">Drop a file here, or press <kbd>Ctrl</kbd>+<kbd>O</kbd></span>
       </p>
+      <canvas id="magnifier" hidden></canvas>
     </div>
 
     <div id="thumbnails" hidden></div>
@@ -160,20 +161,16 @@
 
     <dialog id="help-dialog">
       <h2>Keyboard shortcuts</h2>
-      <dl>
-        <dt><kbd>&#8594;</kbd> <kbd>Space</kbd> <kbd>Page&#8202;Down</kbd></dt><dd>Next page</dd>
-        <dt><kbd>&#8592;</kbd> <kbd>Page&#8202;Up</kbd></dt><dd>Previous page</dd>
-        <dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>First / last page</dd>
-        <dt><kbd>Ctrl</kbd>+<kbd>G</kbd></dt><dd>Go to page</dd>
-        <dt><kbd>+</kbd> <kbd>&#8722;</kbd></dt><dd>Zoom in / out</dd>
-        <dt><kbd>0</kbd></dt><dd>Actual size (100%)</dd>
-        <dt><kbd>F</kbd> <kbd>W</kbd> <kbd>H</kbd></dt><dd>Fit screen / width / height</dd>
-        <dt><kbd>D</kbd></dt><dd>Toggle double page</dd>
-        <dt><kbd>J</kbd></dt><dd>Toggle Japanese (right-to-left) reading</dd>
-        <dt><kbd>R</kbd> <kbd>Shift</kbd>+<kbd>R</kbd></dt><dd>Rotate right / left</dd>
-        <dt><kbd>F11</kbd></dt><dd>Full screen</dd>
-      </dl>
-      <p class="dialog-actions"><button type="button" id="help-close">Close</button></p>
+      <p class="dialog-note">
+        Click a key and press a new one to rebind it; press <kbd>Esc</kbd> to leave a slot unbound.
+        Open, bookmarks, thumbnails, recents, full screen, go-to-page and preferences stay on their
+        menu accelerators.
+      </p>
+      <ul id="shortcut-list"></ul>
+      <p class="dialog-actions">
+        <button type="button" id="shortcut-reset">Reset to defaults</button>
+        <button type="button" id="help-close">Close</button>
+      </p>
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>

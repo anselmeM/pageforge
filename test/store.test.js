@@ -138,8 +138,26 @@ describe("store", () => {
     assert.equal(Object.keys(written.bookmarks).length, 1);
   });
 
-  it("serialises overlapping writes", async () => {
-    const directory = await directoryFor("overlap");
+  it("stores, rebinds and resets keyboard shortcuts", async () => {
+    const directory = await directoryFor("shortcuts");
+    const store = await createStore({ directory });
+    assert.equal(store.shortcuts()["next-page"].primary, "ArrowRight", "defaults are available");
+
+    const rebound = await store.setShortcut("next-page", "primary", "F");
+    assert.equal(rebound["next-page"].primary, "F");
+    assert.equal(rebound["fit-screen"].primary, null, "the key is taken from its previous owner");
+    await assert.rejects(() => store.setShortcut("not-a-command", "primary", "N"), /Unknown command/);
+    await assert.rejects(() => store.setShortcut("next-page", "third", "N"), /Unknown slot/);
+
+    const reopened = await createStore({ directory });
+    assert.equal(reopened.shortcuts()["next-page"].primary, "F", "bindings survive a restart");
+
+    const reset = await reopened.resetShortcuts();
+    assert.equal(reset["next-page"].primary, "ArrowRight");
+    assert.equal(reset["fit-screen"].primary, "F");
+  });
+
+  it("serialises overlapping writes", async () => {    const directory = await directoryFor("overlap");
     const store = await createStore({ directory });
     await store.recordOpen({ targetPath: BOOK, displayName: "Saga.cbz", kind: "archive", pages: 20 });
     await Promise.all([

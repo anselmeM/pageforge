@@ -200,6 +200,36 @@ try {
   } catch (error) {
     failures.push(`QUALITY: ${error.message}`);
   }
+
+  /* Magnifier, slideshow and rebinding. */
+  process.stdout.write("smoke: checking magnifier, slideshow and key rebinding\n");
+  try {
+    const { createStore } = await import("../src/main/store.js");
+    const store = await createStore({ directory: stateDirectory });
+    await store.setPreference("magnifierVisible", true);
+    await store.setPreference("slideshowSeconds", 30);
+    const shortcuts = await store.setShortcut("next-page", "primary", "N");
+    assert.equal(shortcuts["next-page"].primary, "N");
+    const taken = await store.setShortcut("previous-page", "primary", "F");
+    assert.equal(taken["fit-screen"].primary, null, "taking a key unbinds its previous owner");
+    await store.flush();
+
+    const result = await runElectron([".", "--smoke", "--command=toggle-slideshow", fixture.archive], { env });
+    const report = parseReport(result.stdout);
+    if (report === null) {
+      throw new Error(`no report for the M5 case (exit=${result.code})\n${result.stdout}\n${result.stderr}`);
+    }
+    check("M5", report, {
+      magnifierVisible: true,
+      slideshowRunning: true,
+      nextPagePrimary: "N",
+    });
+    process.stdout.write(
+      `smoke: M5 OK — magnifier on, slideshow running, next page bound to ${report.nextPagePrimary}\n`,
+    );
+  } catch (error) {
+    failures.push(`M5: ${error.message}`);
+  }
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {

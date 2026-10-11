@@ -29,6 +29,13 @@ contextBridge.exposeInMainWorld("pageforge", {
   openRecent: (targetPath) => ipcRenderer.invoke("library:open", targetPath),
   /** The one-off command requested on the command line, or null. */
   getStartupCommand: () => ipcRenderer.invoke("app:startup-command"),
+
+  /** Current key bindings. */
+  getShortcuts: () => ipcRenderer.invoke("shortcuts:get"),
+  /** Bind one slot of one command; a null key clears it. */
+  setShortcut: (command, slot, keyString) => ipcRenderer.invoke("shortcuts:set", command, slot, keyString),
+  /** Restore the default key bindings. */
+  resetShortcuts: () => ipcRenderer.invoke("shortcuts:reset"),
   /** The currently open book, or null. */
   getBook: () => ipcRenderer.invoke("book:get"),
   /** Close the open book and release its file handle. */

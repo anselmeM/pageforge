@@ -144,6 +144,66 @@ body {
   font-size: 12px;
 }
 
+/* Magnifier lens ----------------------------------------------------------- */
+
+#magnifier {
+  position: absolute;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 60%);
+  pointer-events: none;
+}
+
+#magnifier[hidden] {
+  display: none;
+}
+
+/* Shortcut list ------------------------------------------------------------ */
+
+#shortcut-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  /* One command per row; the grid inside each row keeps the keys aligned. */
+  grid-template-columns: 1fr;
+  gap: 6px;
+  max-height: 380px;
+  min-width: 470px;
+  overflow-y: auto;
+}
+
+#shortcut-list .shortcut-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+}
+
+#shortcut-list .shortcut-label {
+  color: var(--muted);
+}
+
+#shortcut-list .shortcut-key {
+  min-width: 92px;
+  padding: 4px 10px;
+  color: var(--text);
+  background: #24242d;
+  border: 1px solid var(--chrome-border);
+  border-radius: 5px;
+  font: 12px/1.5 Consolas, monospace;
+  cursor: pointer;
+}
+
+#shortcut-list .shortcut-key:hover {
+  border-color: var(--accent);
+}
+
+#shortcut-list .shortcut-key.capturing {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* Library dialogs ---------------------------------------------------------- */
 
 #bookmark-list,
