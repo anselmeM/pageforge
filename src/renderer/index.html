@@ -240,6 +240,18 @@
           <label for="pref-clear-cache">Saved page index</label>
           <button type="button" id="pref-clear-cache">Clear</button>
         </div>
+        <div class="pref-row">
+          <label for="pref-crash">Send crash reports</label>
+          <input id="pref-crash" type="checkbox" />
+        </div>
+        <div class="pref-row">
+          <label for="pref-crash-dsn">Report destination</label>
+          <input id="pref-crash-dsn" type="text" placeholder="https://key@host/project" spellcheck="false" />
+        </div>
+        <div class="pref-row">
+          <label for="pref-crash-test">Check the destination</label>
+          <button type="button" id="pref-crash-test">Send a test</button>
+        </div>
       </div>
       <p class="dialog-note">
         Automatic colour correction estimates a white balance from each page. Colour boost is a

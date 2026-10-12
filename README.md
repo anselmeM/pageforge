@@ -51,6 +51,9 @@ Working today:
 - **Saved page index**: the second and later opens of an archive skip re-reading
   every page, which on a 67 MB, 41-page comic is the difference between 1142 ms and
   54 ms. Clear it from Reading Quality.
+- **Opt-in crash reporting** (off by default): a crash on your machine is one you
+  can debug; a crash on someone else's is invisible. Nothing is ever sent until
+  reporting is switched on and a destination is set.
 
 Not implemented, each for a stated reason: CBT/TAR archives and DjVu (format work
 not yet done), a true Lanczos kernel and perceptual vibrance (the settings say what
@@ -121,12 +124,46 @@ Measured on a real 67 MB comic with 41 pages: 1142 ms to open with a miss, 54 ms
 the next open. `verify:dist` asserts the miss-then-hit sequence and that the cached
 open reports the same page count and dimensions.
 
+## Crash reporting
+
+The error log PageForge writes only exists where the app was run, so a crash on
+someone else's machine is invisible. Reporting fixes that, and is **off by default**.
+
+Three rules:
+
+- **Nothing is sent until you switch it on *and* give it a destination.** With
+  reporting off, the code path refuses and no request is made — that is asserted,
+  not assumed.
+- **Your account name is not sent.** Stack traces carry absolute paths, and a path
+  contains a person's name, so `C:\Users\<name>` is replaced with `%USERPROFILE%`
+  before anything leaves the machine. The end-to-end check greps the bytes that
+  arrived for the account name.
+- **It can never affect reading.** A report that cannot be delivered is dropped,
+  never retried, and never surfaced mid-book.
+
+Reading Quality has a **Send a test** button. That is deliberate: only you can
+confirm *your* destination works, so the app tells you whether the endpoint accepted
+the report instead of leaving you to assume it did.
+
+The wire format is Sentry's documented ingest contract — a JSON event posted to
+`…/api/<project>/store/` with an `X-Sentry-Auth` header. Speaking the documented
+protocol rather than bundling the SDK is a trade: it keeps an opt-in feature from
+becoming a permanent dependency, at the cost of the SDK extras (breadcrumbs,
+sessions, source maps).
+
+**How far this is verified, stated plainly:** `npm run verify:crash` launches the
+real app against a local server and asserts the URL, the auth header, the event
+body, and the absence of the account name — but a local server implementing the
+documented contract is *not* Sentry's own service. Verifying against Sentry needs a
+DSN and an account, which is exactly what the test button exists for.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs three Windows jobs on every push and pull request:
-the unit tests, the Electron smoke suite, and a packaged build that is then verified
-with `verify:dist` and uploaded as an artifact. The packaged job is the real gate —
-it runs the executable people would download, not the sources.
+the unit tests, the Electron smoke suite plus the crash-report check, and a packaged
+build that is then verified with `verify:dist` and uploaded as an artifact. The
+packaged job is the real gate — it runs the executable people would download, not
+the sources.
 
 CBR fixtures need WinRAR to write the format, so both the smoke suite and
 `verify:dist` **skip** that case with a printed reason when no compressor is
@@ -432,11 +469,11 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 204 unit, store, colour, magnifier, panel, ComicInfo, cache, shortcut and reader tests
+npm test        # 219 unit, store, colour, magnifier, panel, ComicInfo, cache, crash-report and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
-npm run verify  # both
+npm run verify  # all of the above, including opt-in crash reporting
 ```
 
 The fixtures are generated, not committed: `scripts/make-fixture.mjs` writes real
@@ -479,6 +516,8 @@ says what it does not know:
 | Panel strip (panels stacked in the column) | **Chosen over** putting a guided-view camera inside a scrolling column. Two things would then be positioning the same pixels, and they would fight; the strip removes the camera instead. |
 | ComicInfo.xml XML parsing | **A subset parser in `src/core/comicinfo.js`**, not a dependency. The input is small, flat and machine-written; DTDs and entity definitions are skipped, which also removes the external-entity and expansion risks a general parser would have to defend against. |
 | Archive index storage | **`node:sqlite`**, the runtime's built-in SQLite, rather than a native module. Electron 44 bundles Node 24, so there is no rebuild step and nothing to unpack from the asar. It is marked experimental upstream, so it sits behind a wrapper that disables the cache rather than failing an open. |
+| Crash reporting transport | **Sentry's documented ingest contract over `fetch`**, not the Sentry SDK. Reporting is opt-in and may never be used, so it does not justify a permanent dependency; the cost is no breadcrumbs, sessions or source maps. |
+| Crash reporting default | **Off**, and it cannot send without a destination. An app that phones home by default would make the "local, offline" promise false. |
 | Books keyed by absolute path rather than by content digest | **Chosen** limitation; a moved or renamed book is treated as new |
 | Automatic colour correction, gamma, colour boost, scaling quality, page cache | **Observed** options in CDisplayEx's catalog ("Automatic color correction", "Gamma", "Vibrance", "Lanczos (better quality)", "Linear", "Nearest (faster)", "Cache pages") |
 | Colour boost implemented as a saturation matrix | **Chosen approximation**; a linear colour matrix cannot express perceptual vibrance |

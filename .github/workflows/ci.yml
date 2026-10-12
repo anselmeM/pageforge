@@ -70,6 +70,11 @@ jobs:
       # installed WinRAR if one is present.
       - run: npm run smoke
 
+      # Proves opt-in crash reporting posts what it claims, against a local
+      # server: nothing is sent when it is off, and a well-formed event with no
+      # account name in it when it is on.
+      - run: npm run verify:crash
+
   package:
     name: Package and verify the build
     runs-on: windows-latest

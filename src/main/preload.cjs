@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld("pageforge", {
   cacheStats: () => ipcRenderer.invoke("cache:stats"),
   /** Forget the saved archive index; returns how many pages were dropped. */
   clearCache: () => ipcRenderer.invoke("cache:clear"),
+  /** Send a report the reader asked for, to confirm their destination works. */
+  testCrashReport: () => ipcRenderer.invoke("crash:test"),
+  /** Whether crash reporting would send, and where. */
+  crashReportState: () => ipcRenderer.invoke("crash:state"),
   /** Change a preference; the main process echoes the result back. */
   setPreference: (key, value) => ipcRenderer.invoke("library:preference:set", key, value),
   /** Open a recent book by path. Returns { ok, book } or { ok: false, error }. */

@@ -64,6 +64,10 @@ export const DEFAULT_PREFERENCES = {
   sharpenAmount: 0.35,
   /** Remember reading mode and layout per book. */
   rememberPerBook: true,
+  /** Send crash reports, off unless the reader opts in. */
+  crashReporting: false,
+  /** Where crash reports go; empty means there is nowhere to send them. */
+  crashReportingDsn: "",
 };
 
 /**
@@ -101,6 +105,8 @@ export const PREFERENCE_RULES = {
   sharpen: { type: "boolean" },
   sharpenAmount: { type: "number", min: 0, max: 1 },
   rememberPerBook: { type: "boolean" },
+  crashReporting: { type: "boolean" },
+  crashReportingDsn: { type: "string", maxLength: 512 },
 };
 
 /**
@@ -111,6 +117,10 @@ const coerceWithRule = (rule, value) => {
   if (rule === undefined) return undefined;
   if (rule.type === "boolean") return typeof value === "boolean" ? value : undefined;
   if (rule.type === "enum") return rule.values.includes(value) ? value : undefined;
+  if (rule.type === "string") {
+    if (typeof value !== "string") return undefined;
+    return value.length > rule.maxLength ? value.slice(0, rule.maxLength) : value;
+  }
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const clamped = Math.min(rule.max, Math.max(rule.min, value));
   return rule.integer === true ? Math.round(clamped) : clamped;

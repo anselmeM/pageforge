@@ -74,6 +74,8 @@ const prefGrayscale = document.getElementById("pref-grayscale");
 const prefSepia = document.getElementById("pref-sepia");
 const prefSharpen = document.getElementById("pref-sharpen");
 const prefRemember = document.getElementById("pref-remember");
+const prefCrash = document.getElementById("pref-crash");
+const prefCrashDsn = document.getElementById("pref-crash-dsn");
 /** The three per-channel transfer functions inside each transfer stage. */
 const toneCurves = {
   r: document.querySelector("#pf-tone feFuncR"),
@@ -615,6 +617,7 @@ const reportReady = async () => {
     comicInfoPagesReordered: Array.isArray(state.book?.comicInfo?.pageOrder),
     indexCache: state.book?.indexCache ?? null,
     openMs: state.book?.openMs ?? null,
+    crashReport: lastCrashReportResult,
     firstPageName: state.book?.pages?.[0]?.name ?? null,
     lastPageName: state.book?.pages?.[state.book.pages.length - 1]?.name ?? null,
     rightToLeft: state.rightToLeft === true,
@@ -999,6 +1002,8 @@ const syncPreferenceControls = () => {
   prefSepia.value = String(preferences.sepia);
   prefSharpen.checked = preferences.sharpen === true;
   prefRemember.checked = preferences.rememberPerBook !== false;
+  prefCrash.checked = preferences.crashReporting === true;
+  prefCrashDsn.value = preferences.crashReportingDsn ?? "";
   showPreferenceValues();
 };
 
@@ -1101,6 +1106,13 @@ const wirePreferences = () => {
       const cleared = result?.cleared ?? 0;
       toast(cleared === 0 ? "The saved index was already empty" : `Forgot ${cleared} indexed pages`);
     });
+  });
+  prefCrash.addEventListener("change", () => void writePreference("crashReporting", prefCrash.checked));
+  prefCrashDsn.addEventListener("change", () =>
+    void writePreference("crashReportingDsn", prefCrashDsn.value.trim()),
+  );
+  document.getElementById("pref-crash-test").addEventListener("click", () => {
+    void sendTestCrashReport();
   });
   document.getElementById("pref-close").addEventListener("click", () => preferencesDialog.close());
   document.getElementById("shortcut-reset").addEventListener("click", async () => {
@@ -1842,6 +1854,30 @@ const wireResumeBanner = () => {
   document.getElementById("resume-dismiss").addEventListener("click", hideResumeBanner);
 };
 
+/* Crash reporting ---------------------------------------------------------- */
+
+let lastCrashReportResult = null;
+
+/**
+ * Send the test report and say what actually happened.
+ *
+ * "Reporting is on" is not the same as "reports arrive", and only the reader can
+ * check the destination they configured — so this tells them the answer rather
+ * than leaving them to assume it works.
+ */
+const sendTestCrashReport = async () => {
+  try {
+    const result = await api.testCrashReport();
+    lastCrashReportResult = result;
+    if (result?.ok) toast(`Test report accepted (${result.status})`);
+    else toast(`Test report failed: ${result?.error ?? "no answer"}`);
+    return result;
+  } catch (error) {
+    lastCrashReportResult = { ok: false, error: String(error) };
+    return lastCrashReportResult;
+  }
+};
+
 /* Chrome ------------------------------------------------------------------- */
 
 const openingEl = document.getElementById("opening");
@@ -2071,6 +2107,9 @@ const runCommand = async (command) => {
       persistBookSettings();
       return;
     }
+    case "send-test-report":
+      lastCrashReportResult = await sendTestCrashReport();
+      return;
     case "toggle-slideshow":
       toggleSlideshow();
       return;

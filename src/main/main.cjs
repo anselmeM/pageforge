@@ -52,6 +52,18 @@ const recordFailure = (kind, error) => {
   } catch {
     /* stderr already has it. */
   }
+  // A crash on someone else's machine is invisible, which is the whole reason
+  // reporting exists. Off unless the reader opted in, and never allowed to
+  // interfere with the failure it is reporting.
+  void currentCrashReporter()
+    .then((reporter) =>
+      reporter.send({
+        code: kind,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? (error.stack ?? "") : "",
+      }),
+    )
+    .catch(() => {});
 };
 
 process.on("uncaughtException", (error) => recordFailure("uncaughtException", error));
@@ -123,6 +135,24 @@ const ensureIndexCache = async () => {
   const directory = process.env.PAGEFORGE_STATE_DIR ?? app.getPath("userData");
   indexCache = await openIndexCache({ directory });
   return indexCache;
+};
+
+/**
+ * The crash reporter for the current preferences.
+ *
+ * Off unless the reader opted in and gave a destination; `PAGEFORGE_SENTRY_DSN`
+ * overrides the stored destination so a test run can point at its own server.
+ */
+const currentCrashReporter = async () => {
+  const store = await ensureLibrary();
+  const preferences = store.preferences();
+  const { createCrashReporter } = await import("./crash-report.js");
+  return createCrashReporter({
+    enabled: preferences.crashReporting === true,
+    dsn: process.env.PAGEFORGE_SENTRY_DSN ?? preferences.crashReportingDsn ?? "",
+    release: `pageforge@${app.getVersion()}`,
+    environment: app.isPackaged ? "production" : "development",
+  });
 };
 
 /** Path of whatever is open, for per-book lookups. */
@@ -684,6 +714,17 @@ const registerIpc = () => {
   ipcMain.handle("cache:clear", async () => {
     const cache = await ensureIndexCache();
     return { cleared: cache.clear() };
+  });
+  ipcMain.handle("crash:test", async () => {
+    const reporter = await currentCrashReporter();
+    if (!reporter.enabled) {
+      return { ok: false, status: 0, error: "Reporting is off, or no destination is set." };
+    }
+    return reporter.sendTest();
+  });
+  ipcMain.handle("crash:state", async () => {
+    const reporter = await currentCrashReporter();
+    return { enabled: reporter.enabled, endpoint: reporter.endpoint };
   });
   ipcMain.handle("library:progress", async (_event, targetPath, page) => {
     const store = await ensureLibrary();

@@ -12,12 +12,13 @@
     "test": "node --test \"test/*.test.js\"",
     "fixture": "node scripts/make-fixture.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "verify": "npm test && npm run smoke",
+    "verify": "npm test && npm run smoke && npm run verify:crash",
     "predist": "node scripts/ensure-not-running.mjs",
     "dist": "electron-builder --win portable",
     "predist:dir": "node scripts/ensure-not-running.mjs",
     "dist:dir": "electron-builder --win --dir",
     "verify:dist": "node scripts/verify-dist.mjs",
+    "verify:crash": "node scripts/verify-crash-report.mjs",
     "verify:archive": "node scripts/verify-archive.mjs"
   },
   "build": {
