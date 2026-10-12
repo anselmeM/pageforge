@@ -1,10 +1,11 @@
 #!/bin/sh
-# Block direct pushes to the default branch, so every change lands through a PR.
+# Refuse a direct push to the default branch, so every change lands through a PR.
 #
-# This is a guardrail, not a gate: it lives in the working copy, so another clone
-# has no hook until it runs `npm run setup:hooks`, and `git push --no-verify` steps
-# around it. Real enforcement is branch protection on the server, which GitHub does
-# not offer for a private repository on a free plan — see CONTRIBUTING.md.
+# This is a convenience, not the enforcement. master is protected on GitHub: a pull
+# request is required, three checks must pass, and the rule applies to admins, so a
+# direct push fails server-side even when this hook is skipped. The point of the hook
+# is to say so before the network round trip, and it only exists in clones that have
+# run `npm run setup:hooks`.
 #
 # Enable with: git config core.hooksPath .githooks   (or npm run setup:hooks)
 
