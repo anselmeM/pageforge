@@ -295,6 +295,31 @@ export const pdfBytes = (pages) => {
   return Buffer.concat(chunks);
 };
 
+/**
+ * A page of four textured panels separated by white gutters.
+ *
+ * Guided view is only meaningful on artwork; a flat page has no gutters to
+ * find. This gives the panel detector something real to work with, so the
+ * guided path can be asserted through the running app.
+ */
+export const panelledPngBytes = (width = 400, height = 600, gutter = 20) => {
+  const raw = Buffer.alloc(height * (1 + width * 3));
+  for (let y = 0; y < height; y += 1) {
+    const rowStart = y * (1 + width * 3);
+    raw[rowStart] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const at = rowStart + 1 + x * 3;
+      const inGutterX = x >= width / 2 - gutter / 2 && x < width / 2 + gutter / 2;
+      const inGutterY = y >= height / 2 - gutter / 2 && y < height / 2 + gutter / 2;
+      const value = inGutterX || inGutterY ? 250 : (x + y) % 2 === 0 ? 20 : 220;
+      raw[at] = value;
+      raw[at + 1] = value;
+      raw[at + 2] = value;
+    }
+  }
+  return pngFromRaw(width, height, raw);
+};
+
 /** PDF page sizes: three portrait pages and one landscape, like the archives. */
 export const FIXTURE_PDF_PAGES = [
   { width: 612, height: 792, colour: [220, 60, 60] },
@@ -350,11 +375,17 @@ export const writeFixture = async (directory) => {
     zipBytes([{ name: "page01.png", data: stripedPngBytes(600, 900) }]),
   );
 
+  const panels = join(directory, "panels.cbz");
+  await writeFile(
+    panels,
+    zipBytes([{ name: "page01.png", data: panelledPngBytes(400, 600) }]),
+  );
+
   const rarBytesResult = await rarBytes(FIXTURE_ENTRIES);
   const rar = rarBytesResult === null ? null : join(directory, "sample.cbr");
   if (rar !== null) await writeFile(rar, rarBytesResult);
 
-  return { archive, folder: join(directory, "folder"), sevenZip, rar, pdf, cast, detail };
+  return { archive, folder: join(directory, "folder"), sevenZip, rar, pdf, cast, detail, panels };
 };
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

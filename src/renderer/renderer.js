@@ -9,6 +9,7 @@
 import { IDENTITY_GAINS, averageChannelMeans, colorFilterParameters, computeWhiteBalanceGains } from "../core/color.js";
 import { clampScale, fitScale, zoomStep } from "../core/fit.js";
 import { lensPosition, magnifierSample } from "../core/magnifier.js";
+import { detectPanels, isWorthGuiding, framePanel } from "../core/panels.js";
 import { DEFAULT_PREFERENCES, describeHistoryEntry, resolveStartPage } from "../core/library.js";
 import {
   COMMAND_LABELS,
@@ -49,6 +50,11 @@ const prefVibrance = document.getElementById("pref-vibrance");
 const prefResampling = document.getElementById("pref-resampling");
 const prefPrefetch = document.getElementById("pref-prefetch");
 const prefToolbarFullscreen = document.getElementById("pref-toolbar-fullscreen");
+const prefGuided = document.getElementById("pref-guided");
+const prefGuidedFill = document.getElementById("pref-guided-fill");
+const prefGuidedPan = document.getElementById("pref-guided-pan");
+const prefGuidedEasing = document.getElementById("pref-guided-easing");
+const prefGuidedSpotlight = document.getElementById("pref-guided-spotlight");
 /** The three per-channel transfer functions inside the colour filter. */
 const colorCurves = {
   r: document.querySelector("#pf-color feFuncR"),
@@ -107,6 +113,12 @@ const state = {
   capturing: null,
   /** True while the window really is full screen. */
   fullscreen: false,
+  /** True while a panel camera, rather than a fit mode, drives the transform. */
+  guidedCamera: false,
+  /** Panels detected for a page, by page index. */
+  guidedPanels: new Map(),
+  /** Which panel of the current page the camera is on. */
+  guidedStep: 0,
   /** True while the slideshow is advancing pages. */
   slideshowRunning: false,
 };
@@ -146,11 +158,15 @@ const panMargin = () => Math.min(120, viewportSize().height * 0.2);
 const updateStatus = () => {
   const spread = currentSpread();
   zoomLabel.textContent = `${Math.round(state.scale * 100)}%`;
+  const panels = currentPanels();
   modeLabel.textContent = [
-    state.doublePage ? "Double page" : "Single page",
+    state.doublePage && state.preferences.guidedView !== true ? "Double page" : "Single page",
     state.rightToLeft ? "Right to left" : "Left to right",
     state.fitMode === "manual" ? "Zoom" : `Fit ${state.fitMode}`,
     state.rotation === 0 ? null : `${state.rotation}°`,
+    guidedActive() && panels !== null && isWorthGuiding(panels)
+      ? `Panel ${state.guidedStep + 1} / ${panels.length}`
+      : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -168,7 +184,7 @@ const updateStatus = () => {
 };
 
 /** Push the current scale, rotation and offset onto the existing DOM nodes. */
-const layoutSpread = () => {
+const layoutSpread = (options = {}) => {
   const spread = currentSpread();
   if (spread === null) {
     updateStatus();
@@ -176,7 +192,9 @@ const layoutSpread = () => {
   }
   const viewport = viewportSize();
   const content = contentSize();
-  state.offset = clampPan(state.offset, content, viewport, panMargin());
+  // A panel camera places the view deliberately, so it is not clamped back to
+  // the page bounds the way a fit or a drag is.
+  if (!state.guidedCamera) state.offset = clampPan(state.offset, content, viewport, panMargin());
 
   for (const node of state.nodes) {
     const base = pageSize(node.page);
@@ -187,7 +205,15 @@ const layoutSpread = () => {
     node.element.style.height = `${base.height * state.scale}px`;
     node.element.style.transform = `translate(-50%, -50%) rotate(${state.rotation}deg)`;
   }
+
+  // Page changes should be instant; moving between panels should glide.
+  const pan = state.preferences.guidedPanMs ?? 0;
+  spreadEl.style.transition =
+    options.animate === true && pan > 0
+      ? `transform ${pan}ms ${state.preferences.guidedEasing ?? "ease-out"}`
+      : "";
   spreadEl.style.transform = `translate(${state.offset.x}px, ${state.offset.y}px)`;
+  positionSpotlight();
   scheduleCanvasRenders();
   sampleSpreadColor();
   updateStatus();
@@ -241,7 +267,10 @@ const renderCanvasNode = async (node, resolution) => {
       context.drawImage(source, 0, 0, width, height);
       if (node.renderToken === token) node.renderedScale = resolution;
     }
-    if (state.nodes[0] === node) sampleSpreadColor();
+    if (state.nodes[0] === node) {
+      sampleSpreadColor();
+      ensureGuidedCamera();
+    }
   } catch (error) {
     // A cancelled render is expected whenever the user moves on quickly.
     if (node.renderToken === token && error?.name !== "RenderingCancelledException") {
@@ -376,6 +405,7 @@ const renderSpread = () => {
       element.addEventListener("load", () => {
         learnDimensions(page, element);
         sampleSpreadColor();
+        ensureGuidedCamera();
       });
       element.addEventListener("error", () => toast(`Could not display ${page.name}`));
     }
@@ -401,7 +431,9 @@ const renderSpread = () => {
 const rebuildSpreads = () => {
   state.spreads = buildSpreads(
     state.book.pages.map((page) => pageSize(page)),
-    { doublePage: state.doublePage, coverAlone: false },
+    // Guided view frames one page at a time, so pairing is suspended while it
+    // is on; the double-page preference is kept for when it is turned off.
+    { doublePage: state.doublePage && state.preferences.guidedView !== true, coverAlone: false },
   );
   state.spreadIndex = Math.min(state.spreadIndex, Math.max(0, state.spreads.length - 1));
 };
@@ -433,8 +465,18 @@ const waitForFirstPage = async () => {
   }
 };
 
+/** Wait until the current page's panels have been detected. */
+const waitForPanels = async (timeoutMs = 5000) => {
+  if (!guidedActive()) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && currentPanels() === null) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+};
+
 const reportReady = async () => {
   await waitForFirstPage();
+  await waitForPanels();
   const node = state.nodes[0];
   const spread = currentSpread();
   const rendered =
@@ -466,6 +508,16 @@ const reportReady = async () => {
     nextPagePrimary: state.shortcuts["next-page"].primary,
     // The window's real state, not what the viewer thinks it asked for.
     fullscreen: await api.isFullscreen().catch(() => state.fullscreen),
+    guidedView: state.preferences.guidedView === true,
+    guidedPanels: currentPanels()?.length ?? 0,
+    guidedStep: state.guidedStep,
+    // Diagnostic: the boxes themselves, in page coordinates.
+    guidedBoxes: (currentPanels() ?? []).slice(0, 4).map((panel) => ({
+      x: Math.round(panel.x),
+      y: Math.round(panel.y),
+      w: Math.round(panel.width),
+      h: Math.round(panel.height),
+    })),
   });
 };
 
@@ -496,6 +548,9 @@ const applyBook = async (book) => {
   state.colorGains = { ...IDENTITY_GAINS };
   state.colorGainsByPage.clear();
   state.prefetched.clear();
+  state.guidedPanels.clear();
+  state.guidedStep = 0;
+  state.guidedCamera = false;
   rebuildSpreads();
   renderSpread();
   applyFit();
@@ -747,6 +802,12 @@ const syncPreferenceControls = () => {
   prefResampling.value = preferences.resampling;
   prefPrefetch.value = String(preferences.prefetchPages);
   prefToolbarFullscreen.checked = preferences.toolbarInFullscreen === true;
+  prefGuided.checked = preferences.guidedView === true;
+  prefGuidedFill.value = String(preferences.guidedFill);
+  prefGuidedPan.value = String(preferences.guidedPanMs);
+  prefGuidedEasing.value = preferences.guidedEasing;
+  prefGuidedSpotlight.checked = preferences.guidedSpotlight === true;
+  document.getElementById("pref-guided-fill-value").textContent = Number(prefGuidedFill.value).toFixed(2);
   showPreferenceValues();
 };
 
@@ -773,6 +834,18 @@ const writePreference = async (key, value) => {
     else applyFit();
   }
   if (key === "colorMode" || key === "colorSensitivity") sampleSpreadColor();
+  if (
+    key === "guidedView" ||
+    key === "guidedFill" ||
+    key === "guidedPanMs" ||
+    key === "guidedEasing" ||
+    key === "guidedSpotlight"
+  ) {
+    state.guidedCamera = false;
+    if (!ensureGuidedCamera()) applyFit();
+    positionSpotlight();
+    updateStatus();
+  }
 };
 
 const wirePreferences = () => {
@@ -783,6 +856,22 @@ const wirePreferences = () => {
   );
   prefToolbarFullscreen.addEventListener("change", () =>
     void writePreference("toolbarInFullscreen", prefToolbarFullscreen.checked),
+  );
+  prefGuided.addEventListener("change", () => void writePreference("guidedView", prefGuided.checked));
+  prefGuidedFill.addEventListener("input", () => {
+    document.getElementById("pref-guided-fill-value").textContent = Number(prefGuidedFill.value).toFixed(2);
+  });
+  prefGuidedFill.addEventListener("change", () =>
+    void writePreference("guidedFill", Number(prefGuidedFill.value)),
+  );
+  prefGuidedPan.addEventListener("change", () =>
+    void writePreference("guidedPanMs", Number(prefGuidedPan.value)),
+  );
+  prefGuidedEasing.addEventListener("change", () =>
+    void writePreference("guidedEasing", prefGuidedEasing.value),
+  );
+  prefGuidedSpotlight.addEventListener("change", () =>
+    void writePreference("guidedSpotlight", prefGuidedSpotlight.checked),
   );
   for (const [element, key] of [
     [prefSensitivity, "colorSensitivity"],
@@ -957,22 +1046,169 @@ const renderShortcutList = () => {
   }
 };
 
+/* Guided view -------------------------------------------------------------- */
+
+const spotlightEl = document.getElementById("spotlight");
+const PANEL_SAMPLE_MAX = 800;
+const panelSampleCanvas = document.createElement("canvas");
+const panelSampleContext = panelSampleCanvas.getContext("2d", { willReadFrequently: true });
+
+const guidedActive = () => state.preferences.guidedView === true && state.book !== null;
+
+/** Page that guided view is framing: the leading page of the spread. */
+const guidedPageIndex = () => {
+  const spread = currentSpread();
+  return spread === null ? null : spread.indices[0];
+};
+
+const currentPanels = () => {
+  const index = guidedPageIndex();
+  if (index === null) return null;
+  const panels = state.guidedPanels.get(index);
+  return panels === undefined ? null : panels;
+};
+
+/**
+ * Detect the panels of the page on screen.
+ *
+ * The page is sampled at a reduced size, because the detector's cost is
+ * proportional to pixel count and gutters survive downscaling. The parameters
+ * are expressed in *page* pixels and converted, since a gutter that is 8px on
+ * the page is under 2px in a quarter-scale sample and would otherwise be
+ * dismissed as noise.
+ */
+const PAGE_GUTTER_PX = 5;
+const PAGE_MIN_PANEL_PX = 0.09;
+const detectPagePanels = (node) => {
+  const base = pageSize(node.page);
+  const scale = Math.min(PANEL_SAMPLE_MAX / base.width, PANEL_SAMPLE_MAX / base.height, 1);
+  const width = Math.max(1, Math.round(base.width * scale));
+  const height = Math.max(1, Math.round(base.height * scale));
+  panelSampleCanvas.width = width;
+  panelSampleCanvas.height = height;
+  panelSampleContext.clearRect(0, 0, width, height);
+  panelSampleContext.drawImage(node.element, 0, 0, width, height);
+  const image = panelSampleContext.getImageData(0, 0, width, height);
+  const panels = detectPanels(image, {
+    rightToLeft: state.rightToLeft === true,
+    gutter: Math.max(1, Math.round(PAGE_GUTTER_PX * scale)),
+    minSize: Math.max(12, Math.round(Math.min(base.width, base.height) * PAGE_MIN_PANEL_PX * scale)),
+  });
+  return panels.map((panel) => ({
+    x: panel.x / scale,
+    y: panel.y / scale,
+    width: panel.width / scale,
+    height: panel.height / scale,
+  }));
+};
+
+const nodeReadyForCapture = (node) =>
+  node.kind === "image" ? node.element.complete && node.element.naturalWidth > 0 : node.renderedScale > 0;
+
+/** Detect once per page, then frame the current panel. */
+const ensureGuidedCamera = (options = {}) => {
+  if (!guidedActive()) {
+    state.guidedCamera = false;
+    spotlightEl.hidden = true;
+    return false;
+  }
+  const node = state.nodes[0];
+  const index = guidedPageIndex();
+  if (node === undefined || index === null) return false;
+
+  if (!state.guidedPanels.has(index)) {
+    if (!nodeReadyForCapture(node)) return false;
+    try {
+      state.guidedPanels.set(index, detectPagePanels(node));
+    } catch {
+      // A page that cannot be sampled is read whole rather than failing.
+      state.guidedPanels.set(index, [{ x: 0, y: 0, width: pageSize(node.page).width, height: pageSize(node.page).height }]);
+    }
+  }
+  const panels = state.guidedPanels.get(index);
+  if (!isWorthGuiding(panels)) {
+    // A splash page or a single-panel page is shown whole, which is what the
+    // normal fit already does.
+    state.guidedCamera = false;
+    spotlightEl.hidden = true;
+    updateStatus();
+    return false;
+  }
+
+  state.guidedStep = Math.min(Math.max(state.guidedStep, 0), panels.length - 1);
+  const camera = framePanel({
+    panel: panels[state.guidedStep],
+    page: pageSize(node.page),
+    viewport: viewportSize(),
+    rotation: state.rotation,
+    fill: state.preferences.guidedFill ?? 0.92,
+  });
+  state.scale = camera.scale;
+  state.offset = camera.offset;
+  state.guidedCamera = true;
+  layoutSpread({ animate: options.animate === true });
+  return true;
+};
+
+/** Move the spotlight over the focused panel, in viewport coordinates. */
+const positionSpotlight = () => {
+  const node = state.nodes[0];
+  const panels = currentPanels();
+  if (!state.guidedCamera || node === undefined || panels === null || state.preferences.guidedSpotlight !== true) {
+    spotlightEl.hidden = true;
+    return;
+  }
+  const panel = panels[state.guidedStep];
+  const quarterTurned = state.rotation % 180 === 90;
+  const width = (quarterTurned ? panel.height : panel.width) * state.scale;
+  const height = (quarterTurned ? panel.width : panel.height) * state.scale;
+  const viewport = viewportSize();
+  spotlightEl.style.width = `${width}px`;
+  spotlightEl.style.height = `${height}px`;
+  spotlightEl.style.left = `${(viewport.width - width) / 2}px`;
+  spotlightEl.style.top = `${(viewport.height - height) / 2}px`;
+  spotlightEl.hidden = false;
+};
+
+/** Step within the page's panels. Returns false when the page is exhausted. */
+const stepPanel = (direction) => {
+  const panels = currentPanels();
+  if (!guidedActive() || panels === null || !isWorthGuiding(panels)) return false;
+  const next = state.guidedStep + direction;
+  if (next < 0 || next >= panels.length) return false;
+  state.guidedStep = next;
+  state.guidedCamera = false;
+  ensureGuidedCamera({ animate: true });
+  updateStatus();
+  return true;
+};
+
 /* Navigation --------------------------------------------------------------- */
 
 const goToSpread = (index) => {
   if (state.book === null || state.spreads.length === 0) return;
   const clamped = Math.min(Math.max(index, 0), state.spreads.length - 1);
   state.spreadIndex = clamped;
+  // A new page starts at its first panel.
+  state.guidedStep = 0;
+  state.guidedCamera = false;
   renderSpread();
   if (state.fitMode === "manual") layoutSpread();
   else applyFit();
+  ensureGuidedCamera();
   updateThumbnailHighlight();
   prefetchAround();
   reportProgress();
 };
 
-const nextSpread = () => goToSpread(state.spreadIndex + 1);
-const previousSpread = () => goToSpread(state.spreadIndex - 1);
+const nextSpread = () => {
+  if (stepPanel(1)) return;
+  goToSpread(state.spreadIndex + 1);
+};
+const previousSpread = () => {
+  if (stepPanel(-1)) return;
+  goToSpread(state.spreadIndex - 1);
+};
 
 const goToPage = (pageNumber) => {
   if (state.book === null) return;
@@ -985,6 +1221,9 @@ const goToPage = (pageNumber) => {
 const setScale = (nextScale, pointer = { x: 0, y: 0 }) => {
   const clamped = clampScale(nextScale);
   if (Math.abs(clamped - state.scale) < 1e-6) return;
+  // Zooming by hand takes over from the panel camera until the next step.
+  state.guidedCamera = false;
+  spotlightEl.hidden = true;
   state.offset = zoomAtPoint(state.scale, state.offset, clamped, pointer);
   state.scale = clamped;
   state.fitMode = "manual";
@@ -1048,6 +1287,7 @@ const syncToolbar = () => {
       (button.dataset.command === "toggle-double" && state.doublePage) ||
       (button.dataset.command === "toggle-rtl" && state.rightToLeft) ||
       (button.dataset.command === "toggle-thumbnails" && state.thumbnailsVisible) ||
+      (button.dataset.command === "toggle-guided" && guidedActive()) ||
       (button.dataset.command === "fit-screen" && state.fitMode === "screen");
     button.setAttribute("aria-pressed", String(Boolean(pressed)));
   }
@@ -1084,9 +1324,14 @@ const applyChrome = () => {
   );
 };
 
+/**
+ * `undefined` toggles; a value requests that exact state. The value is sent
+ * unconditionally rather than compared against a read-back, because the window's
+ * reported state lags the request on Windows.
+ */
 const setFullScreen = async (value) => {
-  const current = await api.isFullscreen();
-  if (value === undefined ? true : value !== current) await api.toggleFullscreen();
+  if (value === undefined) await api.toggleFullscreen();
+  else await api.setFullScreen(value);
 };
 
 const runCommand = async (command) => {
@@ -1177,6 +1422,29 @@ const runCommand = async (command) => {
       if (state.preferences.magnifierVisible === true) showMagnifierAtCentre();
       else hideMagnifier();
       return;
+    case "toggle-guided": {
+      const preferences = await api.setPreference("guidedView", !state.preferences.guidedView);
+      if (preferences !== null && typeof preferences === "object") state.preferences = preferences;
+      state.guidedPanels.clear();
+      state.guidedStep = 0;
+      state.guidedCamera = false;
+      rebuildSpreads();
+      renderSpread();
+      applyFit();
+      syncToolbar();
+      if (state.preferences.guidedView !== true) {
+        spotlightEl.hidden = true;
+        toast("Guided view off");
+      } else if (ensureGuidedCamera()) {
+        toast("Guided view — page keys step through panels");
+      } else if (state.nodes[0] !== undefined && nodeReadyForCapture(state.nodes[0])) {
+        toast("Guided view on; this page has a single panel");
+      } else {
+        // The page is still loading; the camera applies when it arrives.
+        toast("Guided view on");
+      }
+      return;
+    }
     case "toggle-slideshow":
       toggleSlideshow();
       return;

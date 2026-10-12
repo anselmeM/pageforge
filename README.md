@@ -8,7 +8,7 @@ CDisplayEx 1.10.33 (its release notes, its translation catalog, and its installe
 file inventory on this machine). It shares no code, assets, or branding with
 that product, and it does not read or modify CDisplayEx's files.
 
-## Status: milestone 5 — the original objective, complete
+## Status: milestone 6 — guided view
 
 Working today:
 
@@ -34,11 +34,41 @@ Working today:
   of the reader
 - **Magnifier** lens that follows the pointer, an **automatic slideshow**, and
   **rebindable primary and secondary** keyboard shortcuts
+- **Guided view**: panels are detected automatically and the page keys step
+  through them one at a time, with an optional spotlight on the focused panel
 
 Not implemented, each for a stated reason: CBT/TAR archives and DjVu (format work
 not yet done), a true Lanczos kernel and perceptual vibrance (the settings say what
 they actually do instead), "Fit Landscape"/"Fit Portrait" (semantics never
 observed), and portable configuration.
+
+## Guided view
+
+Press `G` (or the **Panels** button) and PageForge finds the panels on the page and
+frames them one at a time; the page keys step forward and back through them before
+moving to the next page.
+
+Panels are found by recursive gutter splitting: a page of comic art is separated by
+gutters — thin runs of rows or columns that are nearly uniform — so a region is cut
+at the widest qualifying gutter and each half is examined again. Three rules keep it
+from cutting artwork to pieces, and they exist because the naive version cut a cover
+into thirteen fragments:
+
+- **A gutter is thin.** A flat band wider than 6% of the axis is background — a
+  black cover, a night sky, a solid panel — not a separator.
+- **Both halves must have room to be a panel**, so a split never produces a
+  fragment.
+- **A region with no variation is dropped**, not reported as a panel.
+
+The detector samples the page at up to 800px and converts its parameters from page
+pixels, because a gutter that is 5px on the page is under 2px in a quarter-scale
+sample and would otherwise be dismissed as noise.
+
+Honest limits: detection is heuristic, so it is best on ordinary panel grids. A
+splash page or a cover is shown whole or split oddly — that is a property of the
+technique, not a bug to hide. The camera, the panel geometry and the detection
+thresholds are all adjustable in Reading Quality (`Ctrl`+`,`): panel fill, travel
+time, easing, and whether the spotlight dims the rest of the page.
 
 ## Magnifier, slideshow and shortcuts
 
@@ -165,6 +195,7 @@ accelerator are not rebindable.
 | `R` / `Shift`+`R` | Rotate right / left |
 | `M` | Toggle the magnifier |
 | `S` | Start or stop the slideshow |
+| `G` | Toggle guided view |
 | `Ctrl`+wheel | Zoom at cursor |
 | Wheel | Scroll the page, then turn the page at the edge |
 | `Ctrl`+`O` / `Ctrl`+`Shift`+`O` | Open comic / folder |
@@ -265,9 +296,9 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 117 unit, store, colour, magnifier, shortcut and reader tests
-npm run smoke   # launches Electron against CBZ, CB7, CBR and PDF fixtures, then
-                # proves resume, bookmarks, white balance, scaling, the magnifier,
+npm test        # 141 unit, store, colour, magnifier, panel, shortcut and reader tests
+npm run smoke   # launches Electron against every format fixture, then proves
+                # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
 npm run verify  # both
 ```
@@ -306,6 +337,8 @@ says what it does not know:
 | Keyboard shortcuts and click zones | **Chosen** bindings; CDisplayEx's own bindings were not inspected |
 | Menu-owned commands are not rebindable | **Chosen**; two owners for one key combination causes double firing |
 | CBT/TAR, DjVu | **Not implemented**; CDisplayEx supports both |
+| Guided view with automatic panel detection | **Not from CDisplayEx**, which has no guided view. Independently implemented from the well-known gutter-splitting technique; no code taken from any other project. |
+| Detection is heuristic and tuned for panel grids | **Chosen**; covers and splash pages are shown whole or split oddly, and that is stated rather than hidden |
 | Books keyed by absolute path rather than by content digest | **Chosen** limitation; a moved or renamed book is treated as new |
 | Automatic colour correction, gamma, colour boost, scaling quality, page cache | **Observed** options in CDisplayEx's catalog ("Automatic color correction", "Gamma", "Vibrance", "Lanczos (better quality)", "Linear", "Nearest (faster)", "Cache pages") |
 | Colour boost implemented as a saturation matrix | **Chosen approximation**; a linear colour matrix cannot express perceptual vibrance |

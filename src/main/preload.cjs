@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld("pageforge", {
   closeBook: () => ipcRenderer.invoke("book:close"),
   /** Toggle window full screen; resolves with the resulting state. */
   toggleFullscreen: () => ipcRenderer.invoke("window:toggle-fullscreen"),
+  /** Set an exact full screen state; resolves with the resulting state. */
+  setFullScreen: (value) => ipcRenderer.invoke("window:set-fullscreen", value),
   /** Current full screen state. */
   isFullscreen: () => ipcRenderer.invoke("window:is-fullscreen"),
   /** Absolute path of a File from a drop event, or "" when unavailable. */

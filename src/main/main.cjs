@@ -601,6 +601,15 @@ const registerIpc = () => {
   ipcMain.handle("window:toggle-fullscreen", () =>
     setFullScreen(mainWindow !== null && !mainWindow.isFullScreen()),
   );
+  /**
+   * Set an explicit state rather than inferring it.
+   *
+   * Windows applies a full-screen change asynchronously, so `isFullScreen()`
+   * immediately after a request still reports the old value. A caller that
+   * decides whether to act by reading it back can therefore do nothing and
+   * leave the window in the state it was trying to leave.
+   */
+  ipcMain.handle("window:set-fullscreen", (_event, value) => setFullScreen(value === true));
   ipcMain.handle(
     "window:is-fullscreen",
     () => mainWindow !== null && !mainWindow.isDestroyed() && mainWindow.isFullScreen(),

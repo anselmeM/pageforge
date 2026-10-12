@@ -36,6 +36,16 @@ export const DEFAULT_PREFERENCES = {
   slideshowSeconds: 5,
   /** Keep the toolbar on screen while in full screen. */
   toolbarInFullscreen: false,
+  /** Step through detected panels one at a time instead of whole pages. */
+  guidedView: false,
+  /** How much of the viewport a guided panel should occupy, 0.5 to 1. */
+  guidedFill: 0.92,
+  /** Camera travel time between panels, in milliseconds. */
+  guidedPanMs: 350,
+  /** Easing for the guided camera. */
+  guidedEasing: "ease-out",
+  /** Dim everything outside the focused panel. */
+  guidedSpotlight: true,
 };
 
 /**
@@ -59,6 +69,11 @@ export const PREFERENCE_RULES = {
   magnifierFactor: { type: "number", min: 1.5, max: 6 },
   slideshowSeconds: { type: "number", min: 1, max: 120, integer: true },
   toolbarInFullscreen: { type: "boolean" },
+  guidedView: { type: "boolean" },
+  guidedFill: { type: "number", min: 0.5, max: 1 },
+  guidedPanMs: { type: "number", min: 0, max: 1500, integer: true },
+  guidedEasing: { type: "enum", values: ["linear", "ease-in", "ease-out", "ease-in-out"] },
+  guidedSpotlight: { type: "boolean" },
 };
 
 /**

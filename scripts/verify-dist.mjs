@@ -152,6 +152,33 @@ try {
     }
   }
 
+  // Guided view must find the panels of a panelled page and frame the first one.
+  {
+    const reportFile = join(workspace, "report-guided.json");
+    const result = await run(
+      ["--smoke", `--report=${reportFile}`, "--command=toggle-guided", fixture.panels],
+      env,
+    );
+    let report = null;
+    try {
+      report = JSON.parse(await readFile(reportFile, "utf8"));
+    } catch {
+      report = parseReport(result.stdout);
+    }
+    try {
+      if (report === null) {
+        throw new Error(`no report (exit=${result.code})\n${result.stdout}\n${result.stderr}`);
+      }
+      assert.equal(report.smoke, "ok", `app reported ${JSON.stringify(report)}`);
+      assert.equal(report.guidedView, true, "guided view is on");
+      assert.equal(report.guidedPanels, 4, "a two-by-two page has four panels");
+      assert.equal(report.guidedStep, 0, "the camera starts on the first panel");
+      process.stdout.write(`verify-dist: guided view OK — ${report.guidedPanels} panels detected\n`);
+    } catch (error) {
+      failures.push(`guided: ${error.message}`);
+    }
+  }
+
   // The capture path exercises the full render pipeline, not just the loader.
   const screenshot = join(workspace, "packaged.png");
   const captured = await run([`--capture=${screenshot}`, fixture.archive], env);

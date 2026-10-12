@@ -144,6 +144,21 @@ body {
   font-size: 12px;
 }
 
+/* Guided view spotlight ---------------------------------------------------- */
+
+/* An oversized shadow dims everything except the focused panel, so no mask has
+   to be computed. */
+#spotlight {
+  position: absolute;
+  border-radius: 3px;
+  box-shadow: 0 0 0 9999px rgb(6 6 10 / 62%);
+  pointer-events: none;
+}
+
+#spotlight[hidden] {
+  display: none;
+}
+
 /* Magnifier lens ----------------------------------------------------------- */
 
 #magnifier {

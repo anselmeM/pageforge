@@ -25,6 +25,7 @@ export const REBINDABLE_COMMANDS = [
   "rotate-ccw",
   "toggle-magnifier",
   "toggle-slideshow",
+  "toggle-guided",
 ];
 
 /** Human labels for the shortcuts dialog. */
@@ -45,6 +46,7 @@ export const COMMAND_LABELS = {
   "rotate-ccw": "Rotate left",
   "toggle-magnifier": "Magnifier",
   "toggle-slideshow": "Slideshow",
+  "toggle-guided": "Guided view",
 };
 
 /** A command is bound to a primary key and optionally a second one. */
@@ -65,6 +67,7 @@ export const DEFAULT_SHORTCUTS = {
   "rotate-ccw": { primary: "Shift+R", secondary: null },
   "toggle-magnifier": { primary: "M", secondary: null },
   "toggle-slideshow": { primary: "S", secondary: null },
+  "toggle-guided": { primary: "G", secondary: null },
 };
 
 const NAMED_KEYS = new Set([

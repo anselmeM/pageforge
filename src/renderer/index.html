@@ -35,6 +35,7 @@
         <span class="hint">Drop a file here, or press <kbd>Ctrl</kbd>+<kbd>O</kbd></span>
       </p>
       <canvas id="magnifier" hidden></canvas>
+      <div id="spotlight" hidden></div>
     </div>
 
     <div id="thumbnails" hidden></div>
@@ -57,6 +58,7 @@
       <button type="button" data-command="rotate-cw" title="Rotate right">&#8631;</button>
       <button type="button" data-command="toggle-double" title="Double page">2&#8203;up</button>
       <button type="button" data-command="toggle-rtl" title="Japanese reading (right to left)">RTL</button>
+      <button type="button" data-command="toggle-guided" title="Guided view — step through panels (G)">Panels</button>
       <button type="button" data-command="toggle-thumbnails" title="Page thumbnails (Ctrl+T)">&#9636;</button>
       <button type="button" data-command="add-bookmark" title="Add bookmark (Ctrl+B)">&#9873;</button>
       <button type="button" data-command="show-bookmarks" title="Bookmarks">&#9776;</button>
@@ -140,6 +142,32 @@
         <div class="pref-row">
           <label for="pref-toolbar-fullscreen">Toolbar in full screen</label>
           <input id="pref-toolbar-fullscreen" type="checkbox" />
+        </div>
+        <div class="pref-row">
+          <label for="pref-guided">Guided view</label>
+          <input id="pref-guided" type="checkbox" />
+        </div>
+        <div class="pref-row">
+          <label for="pref-guided-fill">Panel fill</label>
+          <input id="pref-guided-fill" type="range" min="0.5" max="1" step="0.01" />
+          <output id="pref-guided-fill-value"></output>
+        </div>
+        <div class="pref-row">
+          <label for="pref-guided-pan">Panel travel (ms)</label>
+          <input id="pref-guided-pan" type="number" min="0" max="1500" step="25" />
+        </div>
+        <div class="pref-row">
+          <label for="pref-guided-easing">Panel easing</label>
+          <select id="pref-guided-easing">
+            <option value="linear">Linear</option>
+            <option value="ease-in">Ease in</option>
+            <option value="ease-out">Ease out</option>
+            <option value="ease-in-out">Ease in and out</option>
+          </select>
+        </div>
+        <div class="pref-row">
+          <label for="pref-guided-spotlight">Panel spotlight</label>
+          <input id="pref-guided-spotlight" type="checkbox" />
         </div>
       </div>
       <p class="dialog-note">
