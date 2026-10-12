@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { createStore } from "../src/main/store.js";
+import { createStore as openStore } from "../src/main/store.js";
 import { DEFAULT_PREFERENCES } from "../src/core/library.js";
 
 let workspace = null;
@@ -18,12 +18,31 @@ const directoryFor = async (name) => {
   return directory;
 };
 
+/**
+ * Every store a test opens, so they can all be closed before the temporary
+ * directory is removed: a SQLite store holds its file open, and deleting the
+ * directory out from under it fails.
+ */
+const opened = [];
+const createStore = async (options) => {
+  const store = await openStore(options);
+  opened.push(store);
+  return store;
+};
+
 before(async () => {
   workspace = await mkdtemp(join(tmpdir(), "pageforge-store-"));
 });
 
 after(async () => {
-  if (workspace !== null) await rm(workspace, { recursive: true, force: true });
+  for (const store of opened) {
+    try {
+      store.close?.();
+    } catch {
+      /* closing is best effort */
+    }
+  }
+  if (workspace !== null) await rm(workspace, { recursive: true, force: true }).catch(() => {});
 });
 
 const BOOK = "C:\\Comics\\Saga.cbz";
@@ -111,12 +130,15 @@ describe("store", () => {
     await assert.rejects(() => store.setPreference("resampling", "bicubic"), /Invalid value/);    await assert.rejects(() => store.setPreference("resumeLastPage", "yes"), /Invalid value/);
   });
 
+  // These three test the mechanics of the JSON file itself: the corrupt-file
+  // rename, the atomic temporary file and the write queue. They name that
+  // backend explicitly so they keep testing it after SQLite became the default.
   it("preserves a corrupt library instead of discarding it", async () => {
     const directory = await directoryFor("corrupt");
-    await createStore({ directory });
+    await createStore({ directory, storage: "json" });
     await writeFile(join(directory, "library.json"), "{ this is not json", "utf8");
 
-    const store = await createStore({ directory });
+    const store = await createStore({ directory, storage: "json" });
     assert.match(store.loadProblem ?? "", /could not be read/u);
     const files = await readdir(directory);
     assert.equal(files.some((name) => name.includes(".corrupt-")), true, "the old file is kept");
@@ -125,7 +147,7 @@ describe("store", () => {
 
   it("writes atomically and leaves no temporary files", async () => {
     const directory = await directoryFor("atomic");
-    const store = await createStore({ directory });
+    const store = await createStore({ directory, storage: "json" });
     await store.recordOpen({ targetPath: BOOK, displayName: "Saga.cbz", kind: "archive", pages: 20 });
     await store.addBookmark(BOOK, 2, "two");
     await store.flush();
@@ -157,8 +179,9 @@ describe("store", () => {
     assert.equal(reset["fit-screen"].primary, "F");
   });
 
-  it("serialises overlapping writes", async () => {    const directory = await directoryFor("overlap");
-    const store = await createStore({ directory });
+  it("serialises overlapping writes", async () => {
+    const directory = await directoryFor("overlap");
+    const store = await createStore({ directory, storage: "json" });
     await store.recordOpen({ targetPath: BOOK, displayName: "Saga.cbz", kind: "archive", pages: 20 });
     await Promise.all([
       store.addBookmark(BOOK, 1, "one"),

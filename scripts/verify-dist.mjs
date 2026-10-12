@@ -375,6 +375,35 @@ try {
     }
   }
 
+  // The library must run on the database, and a second launch must read it rather
+  // than start again.
+  {
+    const state = join(workspace, "state-library");
+    const env = { ...process.env, PAGEFORGE_STATE_DIR: state };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const firstFile = join(workspace, "report-library-first.json");
+    const secondFile = join(workspace, "report-library-second.json");
+    try {
+      await run(
+        ["--smoke", `--report=${firstFile}`, "--command=next-page,next-page", fixture.archive],
+        env,
+      );
+      await run(["--smoke", `--report=${secondFile}`, fixture.archive], env);
+      const first = JSON.parse(await readFile(firstFile, "utf8"));
+      const second = JSON.parse(await readFile(secondFile, "utf8"));
+      assert.equal(first.storage, "sqlite", `the library is on the database, not ${first.storage}`);
+      assert.equal(second.storage, "sqlite", "and still is on the next launch");
+      // The second launch resumed, which proves it read the stored position.
+      assert.equal(second.startPage, first.startPage, "the position survived the restart");
+      assert.equal(second.startPage, 3, "and it is the page the first run stopped on");
+      process.stdout.write(
+        `verify-dist: library storage OK — ${second.storage}, resumed at page ${second.startPage}\n`,
+      );
+    } catch (error) {
+      failures.push(`library storage: ${error.message}`);
+    }
+  }
+
   // The capture path exercises the full render pipeline, not just the loader.
   const screenshot = join(workspace, "packaged.png");
   const captured = await run([`--capture=${screenshot}`, fixture.archive], envFor("capture"));

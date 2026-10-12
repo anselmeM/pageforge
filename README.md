@@ -374,6 +374,42 @@ another.
 Set `PAGEFORGE_STATE_DIR` to keep a run away from the real library. The tests and
 the smoke run both use it.
 
+## Where the library lives
+
+The library is a SQLite database (`pageforge.sqlite`) in the same directory as the
+settings, through Node's built-in `node:sqlite` — no native module, no rebuild step.
+
+It is there for two reasons, one of which was a real bug:
+
+- **A page turn is one small update**, not a rewrite of the whole library. The old
+  store held everything in memory and rewrote `library.json` on every change.
+- **Two running copies can no longer overwrite each other.** There is no
+  single-instance guard, so with one JSON file the second window to save silently
+  discarded the other's progress. A database gives a real lock, and a test opens two
+  stores on one library and proves neither write is lost.
+
+Existing libraries migrate themselves **once**, and the migration is built so the
+worst case is that it did not happen rather than that your library is gone:
+
+1. The new database is created **beside** the old file, as
+   `pageforge.sqlite.migrating-<pid>`.
+2. Everything is inserted in **one transaction**.
+3. It is **read back and compared** with the source — book, bookmark and achievement
+   counts, and every book's reading position.
+4. Only if that matches is it renamed into place.
+5. Only then is the old file set aside as `library.json.migrated-<timestamp>`.
+
+Any failure deletes the half-built file, leaves `library.json` untouched, and keeps
+running on it. `node:sqlite` is marked experimental upstream, which is why the JSON
+store is still there as a fallback and `PAGEFORGE_STORAGE=json` forces it. The JSON
+**reader** is kept permanently, because migration and import both need it.
+
+**To roll back**, close the app, delete `pageforge.sqlite` and rename the
+`library.json.migrated-<timestamp>` file back to `library.json`.
+
+The saved page index stays in its own file (`index.sqlite`) on purpose: it is
+disposable, and being able to clear it without touching your library is a feature.
+
 ## How archives are read
 
 | Format | Strategy |
@@ -535,7 +571,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 261 unit, store, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
+npm test        # 272 unit, store, database, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
@@ -582,6 +618,7 @@ says what it does not know:
 | Panel strip (panels stacked in the column) | **Chosen over** putting a guided-view camera inside a scrolling column. Two things would then be positioning the same pixels, and they would fight; the strip removes the camera instead. |
 | ComicInfo.xml XML parsing | **A subset parser in `src/core/comicinfo.js`**, not a dependency. The input is small, flat and machine-written; DTDs and entity definitions are skipped, which also removes the external-entity and expansion risks a general parser would have to defend against. |
 | Archive index storage | **`node:sqlite`**, the runtime's built-in SQLite, rather than a native module. Electron 44 bundles Node 24, so there is no rebuild step and nothing to unpack from the asar. It is marked experimental upstream, so it sits behind a wrapper that disables the cache rather than failing an open. |
+| Library storage | **SQLite, with the JSON store kept as a fallback.** Two windows silently overwriting each other was a real bug, and one small update beats rewriting the file on every page turn. The JSON reader is kept forever for migration and import. Existing libraries migrate once, after being verified against the source. |
 | Crash reporting transport | **Sentry's documented ingest contract over `fetch`**, not the Sentry SDK. Reporting is opt-in and may never be used, so it does not justify a permanent dependency; the cost is no breadcrumbs, sessions or source maps. |
 | Crash reporting default | **Off**, and it cannot send without a destination. An app that phones home by default would make the "local, offline" promise false. |
 | Achievements | **Local only, and honest.** Derived from what you read here, never uploaded, counted once per finished book, with day arithmetic that survives daylight saving. Included because they were asked for; they are not forced on a reader who ignores them. |

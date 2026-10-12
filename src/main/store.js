@@ -89,7 +89,7 @@ const sanitize = (value) => {
  * @param {{directory: string}} options
  * @returns {Promise<object>} the store API
  */
-export const createStore = async ({ directory }) => {
+export const createJsonStore = async ({ directory }) => {
   const file = join(directory, FILE_NAME);
   await mkdir(directory, { recursive: true });
 
@@ -356,5 +356,53 @@ export const createStore = async ({ directory }) => {
     async flush() {
       await queue;
     },
+
+    backend: "json",
+    close() {},
   };
+};
+
+/**
+ * Open the library.
+ *
+ * SQLite is preferred because it makes a page turn an O(1) update rather than a
+ * rewrite of the whole library, and because a real lock means two running copies
+ * of the app cannot silently overwrite each other. It is marked experimental
+ * upstream, so this falls back to the JSON store rather than failing to start —
+ * and the JSON *reader* is kept forever, because migration and import both need
+ * it.
+ *
+ * `PAGEFORGE_STORAGE=json` forces the old behaviour, which is also the escape
+ * hatch if a database ever needs to be set aside.
+ *
+ * @param {{directory: string, storage?: "auto"|"json"|"sqlite"}} options
+ */
+export const createStore = async ({ directory, storage = "auto" }) => {
+  const requested = storage ?? process.env.PAGEFORGE_STORAGE ?? "auto";
+  const wanted = requested === "" ? "auto" : requested;
+  if (wanted === "json") return createJsonStore({ directory });
+
+  const { createLibraryDatabase, migrateFromJson, sqliteIsAvailable } = await import("./library-db.js");
+  if (!(await sqliteIsAvailable())) {
+    if (wanted === "sqlite") {
+      throw new Error("PAGEFORGE_STORAGE=sqlite was requested but node:sqlite is not available");
+    }
+    return createJsonStore({ directory });
+  }
+
+  // Build the database beside the old file, verify it, and only then set the JSON
+  // aside. A failure here means the migration did not happen, never a lost library.
+  const migration = await migrateFromJson(directory, {
+    sanitize,
+    jsonFileName: FILE_NAME,
+  });
+  const database = await createLibraryDatabase({ directory });
+  if (database === null) {
+    if (wanted === "sqlite") throw new Error("The library database could not be opened");
+    return createJsonStore({ directory });
+  }
+  if (migration.problem !== null) {
+    database.loadProblem = migration.problem;
+  }
+  return database;
 };

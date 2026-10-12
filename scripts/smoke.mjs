@@ -157,6 +157,8 @@ try {
     await store.recordProgress(fixture.archive, 3);
     await store.addBookmark(fixture.archive, 2, "Chapter 1");
     await store.flush();
+    // A database store holds its file open; the workspace is removed at the end.
+    store.close?.();
 
     const result = await runElectron([".", "--smoke", fixture.archive], { env });
     const report = parseReport(result.stdout);
@@ -190,7 +192,8 @@ try {
     const history = store.history();
     const entry = history.find((item) => item.pathKey.endsWith("sample.cbz"));
     assert.equal(entry?.lastPage, 3, `QUIT: the position was lost (recorded ${entry?.lastPage})`);
-    await rm(stateDirectory, { recursive: true, force: true });
+    store.close?.();
+    await rm(stateDirectory, { recursive: true, force: true }).catch(() => {});
     process.stdout.write(`smoke: QUIT OK — page ${entry.lastPage} remembered after an immediate exit\n`);
   } catch (error) {
     failures.push(`QUIT: ${error.message}`);
@@ -205,6 +208,7 @@ try {
     await store.setPreference("colorSensitivity", 1);
     await store.setPreference("resampling", "high");
     await store.flush();
+    store.close?.();
 
     const result = await runElectron([".", "--smoke", fixture.cast], { env });
     const report = parseReport(result.stdout);
@@ -239,6 +243,7 @@ try {
     const taken = await store.setShortcut("previous-page", "primary", "F");
     assert.equal(taken["fit-screen"].primary, null, "taking a key unbinds its previous owner");
     await store.flush();
+    store.close?.();
 
     const result = await runElectron([".", "--smoke", "--command=toggle-slideshow", fixture.archive], { env });
     const report = parseReport(result.stdout);

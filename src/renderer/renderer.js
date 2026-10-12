@@ -624,6 +624,7 @@ const reportReady = async () => {
     indexCache: state.book?.indexCache ?? null,
     openMs: state.book?.openMs ?? null,
     crashReport: lastCrashReportResult,
+    storage: state.storageBackend ?? null,
     // Read from the store, not from the dialog: the report must not depend on
     // whether anyone opened it.
     achievements: await api
@@ -803,6 +804,7 @@ const refreshLibrary = async () => {
   state.preferences = library.preferences;
   state.history = library.history;
   state.bookmarks = library.bookmarks;
+  state.storageBackend = library.backend ?? null;
   applyPreferences();
   if (library.loadProblem !== null && library.loadProblem !== undefined) toast(library.loadProblem);
   return library;

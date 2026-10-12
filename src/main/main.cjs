@@ -705,6 +705,8 @@ const registerIpc = () => {
       bookmarks: targetPath === null || targetPath === undefined ? [] : store.bookmarks(targetPath),
       bookSettings:
         targetPath === null || targetPath === undefined ? {} : store.bookSettings(targetPath),
+      // Which storage the library is running on, so it can be asserted.
+      backend: store.backend ?? "unknown",
       loadProblem: store.loadProblem,
     };
   });
@@ -882,6 +884,9 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   quitting = true;
   indexCache?.close();
+  // A database store holds its file open; leaving it open during shutdown leaves
+  // the write-ahead log behind.
+  library?.close?.();
   void closeSession();
   // Library writes are queued; give the last one a chance to land.
   if (library !== null) app.once("will-quit", () => void library.flush());
