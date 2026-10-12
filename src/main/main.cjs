@@ -42,8 +42,24 @@ const appRoot = resolve(here, "..");
  * not end the session, and a truncated dialog stack is not something a user can
  * act on. The full stack goes to stderr and to a log beside the library.
  */
+/**
+ * The last thing that went wrong, kept so a report can say why.
+ *
+ * Without this a startup failure produced `{"smoke":"timeout"}` and nothing else,
+ * while the actual error sat in raw stderr. A hang with no stated cause is the
+ * worst kind of failure to debug, and it is entirely avoidable: the reason was
+ * known to this process all along.
+ */
+let lastFailure = null;
+
 const recordFailure = (kind, error) => {
   const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  lastFailure = {
+    kind,
+    message: error instanceof Error ? error.message : String(error),
+    detail,
+    at: new Date().toISOString(),
+  };
   process.stderr.write(`PageForge ${kind}: ${detail}\n`);
   try {
     const directory = process.env.PAGEFORGE_STATE_DIR ?? (app.isReady() ? app.getPath("userData") : null);
@@ -66,8 +82,52 @@ const recordFailure = (kind, error) => {
     .catch(() => {});
 };
 
-process.on("uncaughtException", (error) => recordFailure("uncaughtException", error));
-process.on("unhandledRejection", (reason) => recordFailure("unhandledRejection", reason));
+/**
+ * A failure before the viewer is ready means the app will never finish starting.
+ *
+ * Left alone it becomes a process that does nothing, which for an automated run is
+ * reported as a bare timeout and for a person is a window that never appears. Both
+ * are worse than stopping and saying what happened, so this reports the reason and
+ * exits non-zero instead of waiting for the watchdog.
+ *
+ * @returns {boolean} whether this failure was treated as fatal
+ */
+const failStartup = (error) => {
+  if (viewerReady) return false;
+  const failure = lastFailure ?? { message: error instanceof Error ? error.message : String(error) };
+  const detail = failure.detail ?? failure.message;
+
+  if (isSmokeRun || capturePath !== null) {
+    if (!smokeReported) {
+      smokeReported = true;
+      const payload = isSmokeRun ? { smoke: "error", failure } : { capture: capturePath, failure };
+      void emitReport(payload).finally(() => void exitCleanly(1));
+    }
+    return true;
+  }
+
+  // A person gets a dialog, because an app that starts and shows nothing is
+  // indistinguishable from one that never launched.
+  try {
+    require("electron").dialog.showErrorBox(
+      "PageForge could not finish starting",
+      `${detail}\n\nThis has been written to pageforge-errors.log next to your library.`,
+    );
+  } catch {
+    /* stderr already has it */
+  }
+  app.exit(1);
+  return true;
+};
+
+process.on("uncaughtException", (error) => {
+  recordFailure("uncaughtException", error);
+  failStartup(error);
+});
+process.on("unhandledRejection", (reason) => {
+  recordFailure("unhandledRejection", reason);
+  failStartup(reason);
+});
 
 const STATIC_MIME = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -160,6 +220,8 @@ const currentTargetPath = () => session?.targetPath ?? documentPath;
 
 const isSmokeRun = process.argv.includes("--smoke");
 let smokeReported = false;
+/** True once the viewer has reported its first paint; before that, a failure is fatal. */
+let viewerReady = false;
 
 /** `--capture=<file>` writes a PNG of the rendered window and exits. */
 const captureArgument = process.argv.find((argument) => argument.startsWith("--capture="));
@@ -830,6 +892,9 @@ const registerIpc = () => {
     }
   });
   ipcMain.on("app:ready", async (_event, payload) => {
+    // From here on a failure is something to log, not something that means the app
+    // will never start.
+    viewerReady = true;
     if (smokeReported) return;
     if (isSmokeRun) {
       smokeReported = true;
@@ -856,6 +921,12 @@ const registerIpc = () => {
 };
 
 app.whenReady().then(async () => {
+  // Fault injection, so the fatal-startup path can actually be tested. Without it
+  // the only way to exercise it is to break the app by hand, which is how a silent
+  // hang went unnoticed in the first place.
+  if (process.env.PAGEFORGE_FAULT === "startup") {
+    throw new Error("injected startup failure (PAGEFORGE_FAULT=startup)");
+  }
   handleProtocol();
   registerIpc();
   const store = await ensureLibrary();
@@ -896,7 +967,8 @@ app.on("before-quit", () => {
 
 if (isSmokeRun) {
   setTimeout(async () => {
-    await emitReport({ smoke: "timeout" });
+    // Say why, when we know: the cause is the useful part of a timeout report.
+    await emitReport(lastFailure === null ? { smoke: "timeout" } : { smoke: "timeout", failure: lastFailure });
     await exitCleanly(2);
   }, 30_000);
 }

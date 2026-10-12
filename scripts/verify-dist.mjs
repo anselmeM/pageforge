@@ -404,6 +404,43 @@ try {
     }
   }
 
+  // A startup failure must name its cause and stop, rather than hanging until a
+  // watchdog fires. On the packaged build the launcher detaches stdout, so the
+  // reason has to arrive through the report file.
+  {
+    const reportFile = join(workspace, "report-startup-fault.json");
+    const faulted = {
+      ...process.env,
+      PAGEFORGE_STATE_DIR: join(workspace, "state-fault"),
+      PAGEFORGE_FAULT: "startup",
+    };
+    delete faulted.ELECTRON_RUN_AS_NODE;
+    const started = Date.now();
+    try {
+      const result = await run(["--smoke", `--report=${reportFile}`, fixture.archive], faulted);
+      const elapsed = Date.now() - started;
+      const report = JSON.parse(await readFile(reportFile, "utf8"));
+      assert.equal(report.smoke, "error", `expected an error report, got ${JSON.stringify(report)}`);
+      assert.match(
+        report.failure?.message ?? "",
+        /injected startup failure/u,
+        "the report must name the cause",
+      );
+      assert.notEqual(result.code, 0, "a fatal startup failure must exit non-zero");
+      // Timing is deliberately not asserted tightly here. The portable launcher
+      // extracts the whole application before running it, which takes most of the
+      // time, so a threshold would measure the launcher rather than the fix. The
+      // report shape is the real proof: the watchdog emits `smoke: "timeout"`, so
+      // an `smoke: "error"` carrying the cause can only have come from the fatal
+      // path. The dev smoke asserts the timing, where startup is under a second.
+      process.stdout.write(
+        `verify-dist: startup failure OK — named the cause and exited (${elapsed}ms, launcher included)\n`,
+      );
+    } catch (error) {
+      failures.push(`startup failure: ${error.message}`);
+    }
+  }
+
   // The capture path exercises the full render pipeline, not just the loader.
   const screenshot = join(workspace, "packaged.png");
   const captured = await run([`--capture=${screenshot}`, fixture.archive], envFor("capture"));

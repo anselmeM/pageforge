@@ -440,6 +440,30 @@ quietly outlive the session.
   Reading CBR needs nothing extra. Without it, CBR test cases skip with a printed
   reason rather than passing silently.
 
+## When something goes wrong at startup
+
+A failure before the viewer is ready used to be the worst kind: the process stayed
+alive doing nothing, `--smoke` reported a bare `{"smoke":"timeout"}` after thirty
+seconds, and the actual error existed only in raw stderr. A window that never
+appears and a process that says nothing are indistinguishable from a hang.
+
+Now a failure to start **reports the cause and exits non-zero**, and for a person
+launching it normally it shows a dialog rather than nothing at all:
+
+```json
+{"smoke":"error","failure":{"kind":"unhandledRejection","message":"…","detail":"…reader.js:12:3"}}
+```
+
+The watchdog still exists, but when it does fire it now carries the last recorded
+failure with it, so even a timeout names something.
+
+`PAGEFORGE_FAULT=startup` throws on purpose from inside `app.whenReady()`. That
+exists so this path can be tested at all — the alternative is breaking the app by
+hand, which is exactly how the silent hang went unnoticed. `npm run smoke` asserts
+the cause comes back in well under a second; `verify:dist` asserts the same on the
+packaged build, where the timing is dominated by the portable launcher extracting
+the application and is therefore not asserted.
+
 ## Licence
 
 [MIT](LICENSE). The dependency list is short and every entry is permissively

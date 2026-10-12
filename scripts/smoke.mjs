@@ -74,7 +74,13 @@ const valueAt = (object, path) =>
   path.split(".").reduce((value, key) => (value === null || value === undefined ? value : value[key]), object);
 
 const check = (label, report, expectations) => {
-  assert.equal(report.smoke, "ok", `${label}: app reported ${JSON.stringify(report)}`);
+  // When the app reports a timeout it now carries the reason with it, so surface
+  // it here rather than leaving a bare "timeout" in the failure.
+  const cause =
+    report?.failure === undefined || report.failure === null
+      ? ""
+      : `\n  cause: ${report.failure.message}\n  at: ${(report.failure.detail ?? "").split("\n")[1] ?? ""}`;
+  assert.equal(report.smoke, "ok", `${label}: app reported ${JSON.stringify(report)}${cause}`);
   for (const [key, expected] of Object.entries(expectations)) {
     assert.deepEqual(valueAt(report, key), expected, `${label}: ${key}`);
   }
@@ -173,6 +179,32 @@ try {
     process.stdout.write(`smoke: REOPEN OK — resumed at page ${report.startPage} with ${report.bookmarkCount} bookmark\n`);
   } catch (error) {
     failures.push(`REOPEN: ${error.message}`);
+  }
+
+  // A startup failure must fail fast and say why, rather than hanging. It used to
+  // sit silent for the whole thirty-second watchdog and then report only
+  // "timeout"; the reason was known to the process the entire time.
+  try {
+    const faultDirectory = await mkdtemp(join(tmpdir(), "pageforge-fault-"));
+    const started = Date.now();
+    const result = await runElectron([".", "--smoke", fixture.archive], {
+      env: { ...env, PAGEFORGE_STATE_DIR: faultDirectory, PAGEFORGE_FAULT: "startup" },
+    });
+    const elapsed = Date.now() - started;
+    const report = parseReport(result.stdout);
+    assert.notEqual(report, null, `no report at all (exit=${result.code})\n${result.stderr.slice(-400)}`);
+    assert.equal(report.smoke, "error", `expected an error report, got ${JSON.stringify(report)}`);
+    assert.match(
+      report.failure?.message ?? "",
+      /injected startup failure/u,
+      "the report must name the cause, not just that something timed out",
+    );
+    assert.notEqual(result.code, 0, "a fatal startup failure must exit non-zero");
+    assert.ok(elapsed < 20_000, `it reported the cause in ${elapsed}ms, so it did not wait for the watchdog`);
+    await rm(faultDirectory, { recursive: true, force: true }).catch(() => {});
+    process.stdout.write(`smoke: STARTUP-FAULT OK — reported the cause and exited (${elapsed}ms)\n`);
+  } catch (error) {
+    failures.push(`STARTUP-FAULT: ${error.message}`);
   }
 
   // A page turned and then quit straight away must still be remembered: the
