@@ -273,6 +273,35 @@ try {
     }
   }
 
+  // The saved index must skip re-reading every page on the second open, and
+  // must not change what the pages are.
+  {
+    const state = join(workspace, "state-index-cache");
+    const shared = { ...process.env, PAGEFORGE_STATE_DIR: state };
+    delete shared.ELECTRON_RUN_AS_NODE;
+    const firstFile = join(workspace, "report-cache-first.json");
+    const secondFile = join(workspace, "report-cache-second.json");
+    try {
+      await run(["--smoke", `--report=${firstFile}`, fixture.archive], shared);
+      await run(["--smoke", `--report=${secondFile}`, fixture.archive], shared);
+      const first = JSON.parse(await readFile(firstFile, "utf8"));
+      const second = JSON.parse(await readFile(secondFile, "utf8"));
+      assert.equal(first.indexCache, "miss", "the first open has nothing saved yet");
+      assert.equal(second.indexCache, "hit", "the second open should use the saved index");
+      assert.deepEqual(
+        second.firstPageProbe,
+        first.firstPageProbe,
+        "a cached index reports the same page dimensions",
+      );
+      assert.equal(second.pages, first.pages, "and the same page count");
+      process.stdout.write(
+        `verify-dist: index cache OK — ${first.openMs}ms then ${second.openMs}ms\n`,
+      );
+    } catch (error) {
+      failures.push(`index cache: ${error.message}`);
+    }
+  }
+
   // The capture path exercises the full render pipeline, not just the loader.
   const screenshot = join(workspace, "packaged.png");
   const captured = await run([`--capture=${screenshot}`, fixture.archive], envFor("capture"));

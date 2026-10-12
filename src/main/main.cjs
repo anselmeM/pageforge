@@ -97,6 +97,8 @@ protocol.registerSchemesAsPrivileged([
 let session = null;
 let documentPath = null;
 let mainWindow = null;
+/** Persistent archive index; null until first use. */
+let indexCache = null;
 /** True once the app has started quitting, so a hide is not fought. */
 let quitting = false;
 /** The persistent library, created once the app is ready. */
@@ -109,6 +111,18 @@ const ensureLibrary = async () => {
   const directory = process.env.PAGEFORGE_STATE_DIR ?? app.getPath("userData");
   library = await createStore({ directory });
   return library;
+};
+
+/**
+ * The index cache lives beside the library, and is optional: if it cannot be
+ * opened, everything still works and the reader probes as it always did.
+ */
+const ensureIndexCache = async () => {
+  if (indexCache !== null) return indexCache;
+  const { openIndexCache } = await import("./index-cache.js");
+  const directory = process.env.PAGEFORGE_STATE_DIR ?? app.getPath("userData");
+  indexCache = await openIndexCache({ directory });
+  return indexCache;
 };
 
 /** Path of whatever is open, for per-book lookups. */
@@ -199,6 +213,8 @@ const bookPayload = (opened) => ({
   kind: opened.kind,
   // What the book says about itself, when it says anything.
   comicInfo: opened.comicInfo ?? null,
+  // Whether the saved index was used, so opening can be measured.
+  indexCache: opened.indexCache ?? null,
   pages: opened.pages.map((page, index) => ({
     index,
     name: page.name,
@@ -263,7 +279,10 @@ const loadTarget = async (targetPath) => {
   // Opening a large archive can take a while, so the viewer is told how far it
   // has got rather than left on a blank screen.
   let lastReported = 0;
+  const cache = await ensureIndexCache();
+  const openStartedAt = Date.now();
   const opened = await openTarget(targetPath, {
+    indexCache: cache.enabled ? cache : null,
     onProgress: (progress) => {
       const now = Date.now();
       if (now - lastReported < 80 && progress.total > 0 && progress.done < progress.total) return;
@@ -273,6 +292,7 @@ const loadTarget = async (targetPath) => {
   });
   session = opened;
   const book = bookPayload(opened);
+  book.openMs = Date.now() - openStartedAt;
   const entry = await store.recordOpen({
     targetPath,
     displayName: book.displayName,
@@ -657,6 +677,14 @@ const registerIpc = () => {
     const store = await ensureLibrary();
     return store.setBookSettings(targetPath, settings);
   });
+  ipcMain.handle("cache:stats", async () => {
+    const cache = await ensureIndexCache();
+    return { enabled: cache.enabled, reason: cache.reason, ...cache.stats() };
+  });
+  ipcMain.handle("cache:clear", async () => {
+    const cache = await ensureIndexCache();
+    return { cleared: cache.clear() };
+  });
   ipcMain.handle("library:progress", async (_event, targetPath, page) => {
     const store = await ensureLibrary();
     return store.recordProgress(targetPath, page);
@@ -753,6 +781,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   quitting = true;
+  indexCache?.close();
   void closeSession();
   // Library writes are queued; give the last one a chance to land.
   if (library !== null) app.once("will-quit", () => void library.flush());

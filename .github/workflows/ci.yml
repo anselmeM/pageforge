@@ -1,0 +1,111 @@
+# Test and build PageForge on every push.
+#
+# The project is Windows-only (the packaged target is a Windows executable), so
+# the jobs run on Windows. Nothing here deploys anywhere: the app is a binary
+# people download, so the useful gate is "do the tests pass and does the packaged
+# build still work".
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Electron and electron-builder download large binaries; the cache below
+  # covers the cost after the first run.
+  ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
+  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # `npm ci` is used rather than `npm install` so CI cannot silently drift
+      # from the lockfile.
+      - run: npm ci
+
+      # Pure logic only: no Electron, no window, nothing to be flaky about.
+      - run: npm test
+
+  verify:
+    name: Smoke test (Electron)
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ELECTRON_CACHE }}
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      # Launches the real app against every fixture format, then proves resume,
+      # bookmarks, colour correction, scaling, the magnifier, the slideshow and
+      # key rebinding. It also writes its fixtures, including a CBR through the
+      # installed WinRAR if one is present.
+      - run: npm run smoke
+
+  package:
+    name: Package and verify the build
+    runs-on: windows-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ELECTRON_CACHE }}
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      # The build refuses to run while an instance is open, because Windows locks
+      # the executable and electron-builder then stalls silently.
+      - name: Build the portable executable
+        run: npm run dist
+
+      # Runs the packaged executable, not the sources: every format, the full
+      # screen round trip, guided view, the panel strip, ComicInfo, the saved
+      # index, a screenshot, and that no staging directory is left behind.
+      - name: Verify the packaged build
+        run: npm run verify:dist
+
+      - name: Upload the executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: PageForge-portable
+          path: release/*.exe
+          if-no-files-found: error

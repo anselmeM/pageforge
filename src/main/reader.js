@@ -316,7 +316,7 @@ const probeZipEntry = async (zipfile, entry) => {
   return imageSize(bytes.subarray(0, Math.min(INITIAL_PROBE_BYTES, bytes.length))) ?? imageSize(bytes);
 };
 
-const openZipArchive = async (targetPath, onProgress) => {
+const openZipArchive = async (targetPath, onProgress, indexCache) => {
   const extension = extensionOf(targetPath);
   if (!ARCHIVE_EXTENSIONS.has(extension)) {
     throw new ReaderError(
@@ -333,31 +333,62 @@ const openZipArchive = async (targetPath, onProgress) => {
     if (names.length === 0) {
       throw new ReaderError("no-pages", "This archive contains no readable page images.", { targetPath });
     }
-    // Each page is opened once to read its dimensions, which is the slow part of
-    // opening a large archive, so it is reported as it goes.
-    let probed = 0;
-    const pages = await mapConcurrent(names, PROBE_CONCURRENCY, async (name, index) => {
-      const entry = entries.get(name);
-      const size = await probeZipEntry(zipfile, entry);
-      probed += 1;
-      onProgress?.({ phase: "Reading page index", done: probed, total: names.length });
-      return {
+
+    // Probing every page means decompressing every page, so a remembered index
+    // for the same file at the same size and modification time is used instead.
+    const stats = await stat(targetPath);
+    const cached = indexCache?.lookup(targetPath, stats) ?? null;
+    const reusable =
+      cached !== null &&
+      cached.pages.length === names.length &&
+      cached.pages.every((page, position) => page.name === names[position] && entries.has(page.name));
+    if (reusable) {
+      onProgress?.({ phase: "Using saved index", done: names.length, total: names.length });
+    }
+
+    let pages;
+    if (reusable) {
+      pages = cached.pages.map((page, index) => ({
         index,
-        name,
-        bytes: entry.uncompressedSize,
-        width: size?.width ?? 0,
-        height: size?.height ?? 0,
-        format: size?.format ?? null,
-        entry,
-      };
-    });
-    const comicInfo = await readComicInfo([...entries.keys()], async (name) =>
-      readStreamPrefix(await readZipStream(zipfile, entries.get(name)), MAX_COMICINFO_BYTES),
-    );
+        name: page.name,
+        bytes: page.bytes,
+        width: page.width,
+        height: page.height,
+        format: page.format,
+        entry: entries.get(page.name),
+      }));
+    } else {
+      // Each page is opened once to read its dimensions, which is the slow part
+      // of opening a large archive, so it is reported as it goes.
+      let probed = 0;
+      pages = await mapConcurrent(names, PROBE_CONCURRENCY, async (name, index) => {
+        const entry = entries.get(name);
+        const size = await probeZipEntry(zipfile, entry);
+        probed += 1;
+        onProgress?.({ phase: "Reading page index", done: probed, total: names.length });
+        return {
+          index,
+          name,
+          bytes: entry.uncompressedSize,
+          width: size?.width ?? 0,
+          height: size?.height ?? 0,
+          format: size?.format ?? null,
+          entry,
+        };
+      });
+    }
+    const comicInfo =
+      reusable && cached.comicInfo !== undefined
+        ? cached.comicInfo
+        : await readComicInfo([...entries.keys()], async (name) =>
+            readStreamPrefix(await readZipStream(zipfile, entries.get(name)), MAX_COMICINFO_BYTES),
+          );
+    if (!reusable) indexCache?.store(targetPath, stats, pages, comicInfo);
     return {
       kind: "archive",
       targetPath,
       displayName: basename(targetPath),
+      indexCache: reusable ? "hit" : "miss",
       pages: applyPageOrder(pages, comicInfo?.pageOrder),
       comicInfo,
       async readPage(index) {
@@ -500,9 +531,9 @@ const openStagedArchive = async (targetPath, extract, format) => {
 };
 
 /** Route an archive to the backend that owns its extension. */
-const openArchive = async (targetPath, onProgress) => {
+const openArchive = async (targetPath, onProgress, indexCache) => {
   const extension = extensionOf(targetPath);
-  if (ARCHIVE_EXTENSIONS.has(extension)) return openZipArchive(targetPath, onProgress);
+  if (ARCHIVE_EXTENSIONS.has(extension)) return openZipArchive(targetPath, onProgress, indexCache);
   // RAR and 7z are unpacked by a decoder with no progress feed, so the only
   // honest report is that the whole archive is being staged.
   if (RAR_EXTENSIONS.has(extension)) {
@@ -522,11 +553,11 @@ const openArchive = async (targetPath, onProgress) => {
 
 /** Open a folder of images or a supported comic archive. */
 export const openTarget = async (targetPath, options = {}) => {
-  const { onProgress } = options;
+  const { onProgress, indexCache } = options;
   const info = await stat(targetPath);
   if (info.isDirectory()) return openFolder(targetPath);
   if (!info.isFile()) {
     throw new ReaderError("unsupported-target", "Only files and folders can be opened.", { targetPath });
   }
-  return openArchive(targetPath, onProgress);
+  return openArchive(targetPath, onProgress, indexCache);
 };

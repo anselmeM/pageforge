@@ -613,6 +613,8 @@ const reportReady = async () => {
     comicInfoLabel: comicInfoLabel(state.book?.comicInfo ?? null) ?? "",
     comicInfoDirection: state.book?.comicInfo?.direction ?? null,
     comicInfoPagesReordered: Array.isArray(state.book?.comicInfo?.pageOrder),
+    indexCache: state.book?.indexCache ?? null,
+    openMs: state.book?.openMs ?? null,
     firstPageName: state.book?.pages?.[0]?.name ?? null,
     lastPageName: state.book?.pages?.[state.book.pages.length - 1]?.name ?? null,
     rightToLeft: state.rightToLeft === true,
@@ -1094,6 +1096,12 @@ const wirePreferences = () => {
   prefRemember.addEventListener("change", () =>
     void writePreference("rememberPerBook", prefRemember.checked),
   );
+  document.getElementById("pref-clear-cache").addEventListener("click", () => {
+    void api.clearCache().then((result) => {
+      const cleared = result?.cleared ?? 0;
+      toast(cleared === 0 ? "The saved index was already empty" : `Forgot ${cleared} indexed pages`);
+    });
+  });
   document.getElementById("pref-close").addEventListener("click", () => preferencesDialog.close());
   document.getElementById("shortcut-reset").addEventListener("click", async () => {
     const shortcuts = await api.resetShortcuts();

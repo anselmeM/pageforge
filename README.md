@@ -48,6 +48,9 @@ Working today:
   through them one at a time, with an optional spotlight on the focused panel
 - **Progress percentage** in the status bar, and a progress report while a large
   archive is being opened
+- **Saved page index**: the second and later opens of an archive skip re-reading
+  every page, which on a 67 MB, 41-page comic is the difference between 1142 ms and
+  54 ms. Clear it from Reading Quality.
 
 Not implemented, each for a stated reason: CBT/TAR archives and DjVu (format work
 not yet done), a true Lanczos kernel and perceptual vibrance (the settings say what
@@ -89,6 +92,45 @@ Vertical scroll and guided view are mutually exclusive — they are two ways to 
 the same page — so switching one on switches the other off. The strip is a different
 answer to the same problem as guided view: the camera owns the viewport in guided
 view, and the scrollbar owns it in the strip, and neither fights the other.
+
+## The saved page index
+
+Reading a page's dimensions out of a CBZ means decompressing that page, because the
+size lives in its own image header. For a large archive that is the whole cost of
+opening it, and it produces the same answer every time the file has not changed, so
+the result is kept.
+
+The store is SQLite, through Node's built-in `node:sqlite` — no native module, no
+rebuild step, nothing to unpack from the asar. It holds one row per page plus the
+book's ComicInfo, keyed by path with the file's size and modification time as the
+invalidation rule: an archive that changed in any way has a different one of them in
+practice, and a changed file simply misses and is re-indexed.
+
+Three deliberate properties:
+
+- **It cannot break opening a book.** `node:sqlite` is marked experimental upstream,
+  so it is used behind a thin wrapper; if the module is unavailable or the database
+  cannot be opened, the cache reports itself as disabled and the reader probes
+  exactly as it did before. A cache that can fail an open would be worse than none.
+- **A cache that throws behaves like a cache that missed.** Every method answers even
+  when the database is broken, and that path is tested.
+- **What it stores is not the archive.** Page entries are re-looked-up from the live
+  zip index, so a stale cache cannot serve bytes from a file that is gone.
+
+Measured on a real 67 MB comic with 41 pages: 1142 ms to open with a miss, 54 ms on
+the next open. `verify:dist` asserts the miss-then-hit sequence and that the cached
+open reports the same page count and dimensions.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs three Windows jobs on every push and pull request:
+the unit tests, the Electron smoke suite, and a packaged build that is then verified
+with `verify:dist` and uploaded as an artifact. The packaged job is the real gate —
+it runs the executable people would download, not the sources.
+
+CBR fixtures need WinRAR to write the format, so both the smoke suite and
+`verify:dist` **skip** that case with a printed reason when no compressor is
+installed, rather than passing silently.
 
 ## What a book says about itself
 
@@ -390,7 +432,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 191 unit, store, colour, magnifier, panel, ComicInfo, shortcut and reader tests
+npm test        # 204 unit, store, colour, magnifier, panel, ComicInfo, cache, shortcut and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
@@ -436,6 +478,7 @@ says what it does not know:
 | Vertical scroll, scan filters, progress, per-book layout | **Not from CDisplayEx**; brought in as *ideas* only, implemented independently. The source that suggested them carries no licence, so no code was taken from it. |
 | Panel strip (panels stacked in the column) | **Chosen over** putting a guided-view camera inside a scrolling column. Two things would then be positioning the same pixels, and they would fight; the strip removes the camera instead. |
 | ComicInfo.xml XML parsing | **A subset parser in `src/core/comicinfo.js`**, not a dependency. The input is small, flat and machine-written; DTDs and entity definitions are skipped, which also removes the external-entity and expansion risks a general parser would have to defend against. |
+| Archive index storage | **`node:sqlite`**, the runtime's built-in SQLite, rather than a native module. Electron 44 bundles Node 24, so there is no rebuild step and nothing to unpack from the asar. It is marked experimental upstream, so it sits behind a wrapper that disables the cache rather than failing an open. |
 | Books keyed by absolute path rather than by content digest | **Chosen** limitation; a moved or renamed book is treated as new |
 | Automatic colour correction, gamma, colour boost, scaling quality, page cache | **Observed** options in CDisplayEx's catalog ("Automatic color correction", "Gamma", "Vibrance", "Lanczos (better quality)", "Linear", "Nearest (faster)", "Cache pages") |
 | Colour boost implemented as a saturation matrix | **Chosen approximation**; a linear colour matrix cannot express perceptual vibrance |

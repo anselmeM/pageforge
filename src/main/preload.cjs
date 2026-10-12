@@ -26,6 +26,10 @@ contextBridge.exposeInMainWorld("pageforge", {
   /** Remember layout for a book (reading mode, direction, fit, rotation). */
   setBookSettings: (targetPath, settings) =>
     ipcRenderer.invoke("library:book-settings:set", targetPath, settings),
+  /** What the saved archive index holds. */
+  cacheStats: () => ipcRenderer.invoke("cache:stats"),
+  /** Forget the saved archive index; returns how many pages were dropped. */
+  clearCache: () => ipcRenderer.invoke("cache:clear"),
   /** Change a preference; the main process echoes the result back. */
   setPreference: (key, value) => ipcRenderer.invoke("library:preference:set", key, value),
   /** Open a recent book by path. Returns { ok, book } or { ok: false, error }. */
