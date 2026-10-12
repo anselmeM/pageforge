@@ -43,8 +43,10 @@ npm run setup:hooks      # git config core.hooksPath .githooks
 ```
 
 1. **It refuses a direct push to `master`**, so every change goes through a PR.
-2. **It runs the test suite and refuses a push that fails it.** Six seconds, against
-   about six minutes for the same run in CI.
+2. **It runs the test suite and refuses a push that fails it.** Measured at about
+   eighteen seconds on this machine, against roughly six minutes for the same run in
+   CI. (An earlier version of this line said six seconds, which was a guess and was
+   wrong by a factor of three.)
 
 The second job is the one that does not depend on the server. Branch protection is a
 paid feature for a private repository, so if this repository is ever made private
