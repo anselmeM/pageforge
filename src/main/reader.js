@@ -13,6 +13,7 @@ import { basename, join, relative, sep } from "node:path";
 import yauzl from "yauzl";
 
 import { imageSize, mimeForFormat } from "../core/imageSize.js";
+import { applyPageOrder, parseComicInfo } from "../core/comicinfo.js";
 import { extensionOf, selectPages } from "../core/pages.js";
 
 const INITIAL_PROBE_BYTES = 16 * 1024;
@@ -158,6 +159,38 @@ const collectFolderFiles = async (root) => {
   return found;
 };
 
+/** ComicInfo.xml is small by convention; anything larger is not trusted. */
+const MAX_COMICINFO_BYTES = 1 << 20;
+
+const COMICINFO_FILE = "comicinfo.xml";
+
+/**
+ * The metadata file among a set of names, preferring the shallowest.
+ *
+ * A copy buried in a subfolder must not win over one at the root.
+ */
+export const findComicInfoName = (names) => {
+  const candidates = names.filter(
+    (name) => name.split("/").pop().toLowerCase() === COMICINFO_FILE,
+  );
+  if (candidates.length === 0) return null;
+  return candidates.sort(
+    (a, b) => a.split("/").length - b.split("/").length || a.length - b.length,
+  )[0];
+};
+
+/** Read and parse ComicInfo.xml, or null when there is none or it is unreadable. */
+const readComicInfo = async (names, readBytes) => {
+  const name = findComicInfoName(names);
+  if (name === null) return null;
+  try {
+    return parseComicInfo((await readBytes(name)).toString("utf8"));
+  } catch {
+    // Metadata that cannot be read must never stop a book from opening.
+    return null;
+  }
+};
+
 const openFolder = async (targetPath) => {
   const all = await collectFolderFiles(targetPath);
   const names = selectPages(all);
@@ -182,11 +215,15 @@ const openFolder = async (targetPath) => {
     };
   });
   const gate = createReadGate();
+  const comicInfo = await readComicInfo(all, (name) =>
+    readFilePrefix(join(targetPath, name.split("/").join(sep)), MAX_COMICINFO_BYTES),
+  );
   return {
     kind: "folder",
     targetPath,
     displayName: basename(targetPath),
-    pages,
+    pages: applyPageOrder(pages, comicInfo?.pageOrder),
+    comicInfo,
     async readPage(index) {
       const page = pages[index];
       if (page === undefined) throw new ReaderError("page-out-of-range", `No page at index ${index}.`);
@@ -314,11 +351,15 @@ const openZipArchive = async (targetPath, onProgress) => {
         entry,
       };
     });
+    const comicInfo = await readComicInfo([...entries.keys()], async (name) =>
+      readStreamPrefix(await readZipStream(zipfile, entries.get(name)), MAX_COMICINFO_BYTES),
+    );
     return {
       kind: "archive",
       targetPath,
       displayName: basename(targetPath),
-      pages,
+      pages: applyPageOrder(pages, comicInfo?.pageOrder),
+      comicInfo,
       async readPage(index) {
         const page = pages[index];
         if (page === undefined) throw new ReaderError("page-out-of-range", `No page at index ${index}.`);
@@ -449,6 +490,7 @@ const openStagedArchive = async (targetPath, extract, format) => {
     targetPath,
     displayName: basename(targetPath),
     pages: staged.pages,
+    comicInfo: staged.comicInfo,
     readPage: (index) => staged.readPage(index),
     async close() {
       await staged.close();

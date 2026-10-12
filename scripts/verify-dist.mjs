@@ -246,6 +246,33 @@ try {
     }
   }
 
+  // A book that describes itself: ComicInfo.xml must decide the reading direction
+  // and the page order. The fixture's <Pages> order is the reverse of the file
+  // names, so an ignored file shows page01 first and this fails.
+  {
+    const reportFile = join(workspace, "report-comicinfo.json");
+    const result = await run(["--smoke", `--report=${reportFile}`, fixture.manga], envFor("comicinfo"));
+    let report = null;
+    try {
+      report = JSON.parse(await readFile(reportFile, "utf8"));
+    } catch {
+      report = parseReport(result.stdout);
+    }
+    try {
+      if (report === null) {
+        throw new Error(`no report (exit=${result.code})\n${result.stdout}\n${result.stderr}`);
+      }
+      assert.equal(report.smoke, "ok", `app reported ${JSON.stringify(report)}`);
+      assert.equal(report.comicInfoDirection, "rtl", "the book says right-to-left");
+      assert.equal(report.rightToLeft, true, "so the reader is right-to-left");
+      assert.equal(report.firstPageName, "page03.png", "and starts on the page the file put first");
+      assert.equal(report.comicInfoLabel, "Test Manga #3", "series and number are read");
+      process.stdout.write(`verify-dist: ComicInfo OK — ${report.comicInfoLabel}, rtl, pages reordered\n`);
+    } catch (error) {
+      failures.push(`comicinfo: ${error.message}`);
+    }
+  }
+
   // The capture path exercises the full render pipeline, not just the loader.
   const screenshot = join(workspace, "packaged.png");
   const captured = await run([`--capture=${screenshot}`, fixture.archive], envFor("capture"));

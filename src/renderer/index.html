@@ -55,6 +55,11 @@
       </p>
       <canvas id="magnifier" hidden></canvas>
       <div id="spotlight" hidden></div>
+      <div id="resume-banner" hidden>
+        <span id="resume-text"></span>
+        <button type="button" id="resume-start">Start from page 1</button>
+        <button type="button" id="resume-dismiss">Dismiss</button>
+      </div>
       <div id="opening" hidden>
         <span id="opening-text">Opening…</span>
         <progress id="opening-bar" max="100" value="0"></progress>
@@ -96,6 +101,7 @@
     <footer id="statusbar">
       <span id="page-label">No book open</span>
       <span id="book-label"></span>
+      <span id="info-label"></span>
       <span class="spacer"></span>
       <span id="mode-label"></span>
       <span id="progress-label"></span>

@@ -165,9 +165,35 @@ try {
     }
     check("REOPEN", report, { pages: 4, startPage: 3, bookmarkCount: 1 });
     assert.equal(report.historyCount >= 1, true, "REOPEN: history was not kept");
+    // Resuming tells the reader where it resumed, and offers the beginning.
+    assert.equal(report.resumeBannerVisible, true, "REOPEN: no resume banner");
+    assert.match(report.resumeText, /page 3 of 4/u, "REOPEN: the banner says the wrong page");
     process.stdout.write(`smoke: REOPEN OK — resumed at page ${report.startPage} with ${report.bookmarkCount} bookmark\n`);
   } catch (error) {
     failures.push(`REOPEN: ${error.message}`);
+  }
+
+  // A page turned and then quit straight away must still be remembered: the
+  // position cannot be left waiting on a timer that shutdown never fires.
+  try {
+    const stateDirectory = await mkdtemp(join(tmpdir(), "pageforge-quit-"));
+    const result = await runElectron([".", "--smoke", "--command=next-page,next-page", fixture.archive], {
+      env: { ...env, PAGEFORGE_STATE_DIR: stateDirectory },
+    });
+    const report = parseReport(result.stdout);
+    if (report === null) {
+      throw new Error(`no report on the quick-quit run (exit=${result.code})`);
+    }
+    assert.equal(report.startPage, 3, "QUIT: the reader did not reach page 3");
+    const { createStore } = await import("../src/main/store.js");
+    const store = await createStore({ directory: stateDirectory });
+    const history = store.history();
+    const entry = history.find((item) => item.pathKey.endsWith("sample.cbz"));
+    assert.equal(entry?.lastPage, 3, `QUIT: the position was lost (recorded ${entry?.lastPage})`);
+    await rm(stateDirectory, { recursive: true, force: true });
+    process.stdout.write(`smoke: QUIT OK — page ${entry.lastPage} remembered after an immediate exit\n`);
+  } catch (error) {
+    failures.push(`QUIT: ${error.message}`);
   }
 
   /* Reading quality: colour correction and high-quality scaling. */

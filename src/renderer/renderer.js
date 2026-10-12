@@ -16,6 +16,7 @@ import {
   sharpenKernel,
 } from "../core/color.js";
 import { clampScale, fitScale, zoomStep } from "../core/fit.js";
+import { comicInfoLabel } from "../core/comicinfo.js";
 import { lensPosition, magnifierSample } from "../core/magnifier.js";
 import { detectPanels, isWorthGuiding, framePanel, panelStripRows, panelsFormStrip } from "../core/panels.js";
 import { DEFAULT_PREFERENCES, describeHistoryEntry, resolveStartPage } from "../core/library.js";
@@ -38,6 +39,7 @@ const spreadEl = document.getElementById("spread");
 const emptyState = document.getElementById("empty-state");
 const pageLabel = document.getElementById("page-label");
 const bookLabel = document.getElementById("book-label");
+const infoLabel = document.getElementById("info-label");
 const zoomLabel = document.getElementById("zoom-label");
 const progressLabel = document.getElementById("progress-label");
 const modeLabel = document.getElementById("mode-label");
@@ -606,6 +608,14 @@ const reportReady = async () => {
     stripPanelPages: state.stripPanels.size,
     stripPanelTitle: state.stripPanels.get(state.spreadIndex)?.length ?? 0,
     stripActive: stripActive(),
+    resumeBannerVisible: !resumeBanner.hidden,
+    resumeText: resumeText.textContent,
+    comicInfoLabel: comicInfoLabel(state.book?.comicInfo ?? null) ?? "",
+    comicInfoDirection: state.book?.comicInfo?.direction ?? null,
+    comicInfoPagesReordered: Array.isArray(state.book?.comicInfo?.pageOrder),
+    firstPageName: state.book?.pages?.[0]?.name ?? null,
+    lastPageName: state.book?.pages?.[state.book.pages.length - 1]?.name ?? null,
+    rightToLeft: state.rightToLeft === true,
     stripQueue: stripQueue.length,
     stripPending: stripPending.size,
     stripInFlight,
@@ -678,9 +688,9 @@ const applyBook = async (book) => {
   // Layout remembered for this book wins over the global defaults, so a manga
   // volume opens right-to-left whatever the last book was.
   const remembered = book.bookSettings ?? {};
+  const info = book.comicInfo ?? null;
   if (state.preferences.rememberPerBook !== false) {
     if (typeof remembered.doublePage === "boolean") state.doublePage = remembered.doublePage;
-    if (typeof remembered.rightToLeft === "boolean") state.rightToLeft = remembered.rightToLeft;
     if (typeof remembered.verticalScroll === "boolean") {
       state.preferences = { ...state.preferences, verticalScroll: remembered.verticalScroll };
     }
@@ -690,11 +700,22 @@ const applyBook = async (book) => {
     if (typeof remembered.rotation === "number") state.rotation = remembered.rotation;
     if (typeof remembered.fitMode === "string") state.fitMode = remembered.fitMode;
   }
+  // Reading direction: a layout the reader chose for this book wins, then the
+  // book's own metadata, then whatever the global default was.
+  if (state.preferences.rememberPerBook !== false && typeof remembered.rightToLeft === "boolean") {
+    state.rightToLeft = remembered.rightToLeft;
+  } else if (info?.direction === "rtl") {
+    state.rightToLeft = true;
+  } else if (info?.direction === "ltr") {
+    state.rightToLeft = false;
+  }
+  infoLabel.textContent = comicInfoLabel(info) ?? "";
 
   state.stripPanels.clear();
   state.stripVersion = 0;
   stripQueue = [];
   stripPending.clear();
+  lastReportedPage = -1;
 
   rebuildSpreads();
   renderSpread();
@@ -713,7 +734,7 @@ const applyBook = async (book) => {
   );
   if (start > 1) {
     goToPage(start);
-    toast(`Resumed at page ${start}`);
+    showResumeBanner(start, state.book.pages.length);
   }
   buildThumbnails();
   emptyState.hidden = true;
@@ -764,16 +785,27 @@ const refreshLibrary = async () => {
   return library;
 };
 
-let progressTimer = null;
+/** Last page sent to the store, so a repeat navigation is not re-sent. */
+let lastReportedPage = -1;
 /** Remember the reading position, without writing on every page turn. */
+/**
+ * Record the reading position.
+ *
+ * Sent as soon as the page changes rather than debounced: the app can be closed
+ * at any moment, and a debounced update that has not been sent yet cannot be
+ * flushed on the way out, so the page would be lost. Turning a page is human
+ * paced, and the main process coalesces the disk write.
+ */
 const reportProgress = () => {
   const spread = currentSpread();
   if (state.book === null || spread === null) return;
   const page = spread.indices[0] + 1;
-  clearTimeout(progressTimer);
-  progressTimer = setTimeout(() => {
-    void api.setProgress(state.book.targetPath, page).catch(() => {});
-  }, 400);
+  if (page === lastReportedPage) return;
+  lastReportedPage = page;
+  api.setProgress(state.book.targetPath, page).catch(() => {
+    // Allow a retry on the next navigation if this one did not reach the store.
+    if (lastReportedPage === page) lastReportedPage = -1;
+  });
 };
 
 let thumbnailObserver = null;
@@ -1371,6 +1403,8 @@ const stepPanel = (direction) => {
 
 const goToSpread = (index) => {
   if (state.book === null || state.spreads.length === 0) return;
+  // Moving off the resumed page makes the banner stale.
+  hideResumeBanner();
   const clamped = Math.min(Math.max(index, 0), state.spreads.length - 1);
   state.spreadIndex = clamped;
   // A new page starts at its first panel.
@@ -1763,6 +1797,41 @@ const scrollToVerticalPage = (index) => {
       return;
     }
   }
+};
+
+/* Resume ------------------------------------------------------------------- */
+
+const resumeBanner = document.getElementById("resume-banner");
+const resumeText = document.getElementById("resume-text");
+let resumeTimer = null;
+
+/**
+ * Say where reading resumed, and offer to start over.
+ *
+ * A toast disappears before a reader who was not expecting it has read it, and it
+ * cannot be acted on; resuming is the one moment where the position is a surprise
+ * and the reader may want the beginning instead.
+ */
+const showResumeBanner = (page, total) => {
+  resumeText.textContent = `Resumed at page ${page} of ${total}`;
+  resumeBanner.hidden = false;
+  clearTimeout(resumeTimer);
+  resumeTimer = setTimeout(() => {
+    resumeBanner.hidden = true;
+  }, 12000);
+};
+
+const hideResumeBanner = () => {
+  clearTimeout(resumeTimer);
+  resumeBanner.hidden = true;
+};
+
+const wireResumeBanner = () => {
+  document.getElementById("resume-start").addEventListener("click", () => {
+    hideResumeBanner();
+    goToPage(1);
+  });
+  document.getElementById("resume-dismiss").addEventListener("click", hideResumeBanner);
 };
 
 /* Chrome ------------------------------------------------------------------- */
@@ -2266,6 +2335,7 @@ const init = async () => {
   wireDrop();
   wireResize();
   wireVerticalScroll();
+  wireResumeBanner();
 
   api.onCommand(runCommand);
   api.on("app:book-opened", (book) => applyBookSafely(book));

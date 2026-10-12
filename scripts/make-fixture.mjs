@@ -357,6 +357,34 @@ export const writeFixture = async (directory) => {
   const archive = join(directory, "sample.cbz");
   await writeFile(archive, zipBytes(FIXTURE_ENTRIES));
 
+  // A book that describes itself: right-to-left, with series metadata. The page
+  // order is deliberately reversed from the filenames, so an ignored ComicInfo
+  // would show page one first and the assertion catches it.
+  const manga = join(directory, "manga.cbz");
+  const comicInfoXml = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    "<ComicInfo>",
+    "  <Series>Test Manga</Series>",
+    "  <Number>3</Number>",
+    "  <Manga>YesAndRightToLeft</Manga>",
+    "  <PageCount>3</PageCount>",
+    "  <Pages>",
+    '    <Page Image="2"/>',
+    '    <Page Image="1"/>',
+    '    <Page Image="0"/>',
+    "  </Pages>",
+    "</ComicInfo>",
+  ].join("\n");
+  await writeFile(
+    manga,
+    zipBytes([
+      { name: "ComicInfo.xml", data: Buffer.from(comicInfoXml, "utf8") },
+      { name: "page01.png", data: pngBytes(300, 450, [200, 40, 40]) },
+      { name: "page02.png", data: pngBytes(300, 450, [40, 200, 40]) },
+      { name: "page03.png", data: pngBytes(300, 450, [40, 40, 200]) },
+    ]),
+  );
+
   const sevenZip = join(directory, "sample.cb7");
   await writeFile(sevenZip, await sevenZipBytes(FIXTURE_ENTRIES));
 
@@ -385,7 +413,7 @@ export const writeFixture = async (directory) => {
   const rar = rarBytesResult === null ? null : join(directory, "sample.cbr");
   if (rar !== null) await writeFile(rar, rarBytesResult);
 
-  return { archive, folder: join(directory, "folder"), sevenZip, rar, pdf, cast, detail, panels };
+  return { archive, folder: join(directory, "folder"), sevenZip, rar, pdf, cast, detail, panels, manga };
 };
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

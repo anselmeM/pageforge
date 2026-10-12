@@ -197,6 +197,8 @@ const bookPayload = (opened) => ({
   targetPath: opened.targetPath,
   displayName: opened.displayName,
   kind: opened.kind,
+  // What the book says about itself, when it says anything.
+  comicInfo: opened.comicInfo ?? null,
   pages: opened.pages.map((page, index) => ({
     index,
     name: page.name,

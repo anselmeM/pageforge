@@ -29,7 +29,10 @@ Working today:
 - PDFs are rendered by pdf.js per page and re-rendered when zoom outgrows the
   bitmap; encrypted RAR and 7z archives are reported rather than half-read
 - **Resumes** each book at the page it was left on, remembers a **recent list**,
-  and keeps **named bookmarks** per book
+  and keeps **named bookmarks** per book. Resuming says where it resumed and offers
+  the first page instead of only flashing a toast.
+- **Reads ComicInfo.xml**: a book that declares itself right-to-left opens that way,
+  an explicit page order is honoured, and series and issue are shown in the status bar
 - **Layout is remembered per book**: reading mode, direction, fit and rotation are
   stored against the book, so a manga volume opens right-to-left whatever the last
   book was. Turn it off with "Remember layout per book".
@@ -87,7 +90,38 @@ the same page — so switching one on switches the other off. The strip is a dif
 answer to the same problem as guided view: the camera owns the viewport in guided
 view, and the scrollbar owns it in the strip, and neither fights the other.
 
-## Scan filters
+## What a book says about itself
+
+`ComicInfo.xml` is the metadata file inside a comic archive, and it carries the
+things a filename cannot. PageForge reads three of them:
+
+- **Reading direction.** `Manga` with `YesAndRightToLeft` (the convention found in
+  the wild) or an explicit `ReadingDirection` opens the book right-to-left, so a
+  manga volume reads correctly without being told. A direction you chose yourself
+  for that book wins over the metadata.
+- **Page order.** An explicit `<Pages>` list is applied, but only when it covers
+  every page exactly once. A list that would hide or duplicate a page is ignored
+  rather than half-applied, because silently dropping a page is worse than ignoring
+  a bad file.
+- **Series and issue**, shown in the status bar (`Test Manga #3`).
+
+The XML is a small, flat, machine-written document, so a focused subset parser is
+used instead of a general XML library. What is deliberately *not* supported: DTDs
+and entity definitions (so no external entity resolution and no entity expansion
+blow-up — a `<!ENTITY>` is skipped, and an undefined entity is left as written
+rather than guessed at), namespaces, and attribute-value normalisation. Malformed
+markup is recovered from rather than thrown on, because a book with a slightly
+broken metadata file should still open — and metadata that cannot be read must
+never stop a book from opening.
+
+## Resume and quitting
+
+Reading position is sent as soon as the page changes, not debounced. A debounced
+update that has not been sent yet cannot be flushed on the way out, so quitting
+within the debounce window silently lost the page you were on. Page turns are human
+paced, and the main process coalesces the disk write, so sending immediately costs
+nothing and removes the window. `npm run smoke` covers it: a page turned and then
+quit straight away must still be remembered.
 
 Brightness, contrast, grayscale, sepia and sharpening are separate from colour
 correction: colour correction neutralises a cast, scan filters make a bad scan
@@ -356,7 +390,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 165 unit, store, colour, magnifier, panel, shortcut and reader tests
+npm test        # 191 unit, store, colour, magnifier, panel, ComicInfo, shortcut and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
@@ -401,6 +435,7 @@ says what it does not know:
 | Detection is heuristic and tuned for panel grids | **Chosen**; covers and splash pages are shown whole or split oddly, and that is stated rather than hidden |
 | Vertical scroll, scan filters, progress, per-book layout | **Not from CDisplayEx**; brought in as *ideas* only, implemented independently. The source that suggested them carries no licence, so no code was taken from it. |
 | Panel strip (panels stacked in the column) | **Chosen over** putting a guided-view camera inside a scrolling column. Two things would then be positioning the same pixels, and they would fight; the strip removes the camera instead. |
+| ComicInfo.xml XML parsing | **A subset parser in `src/core/comicinfo.js`**, not a dependency. The input is small, flat and machine-written; DTDs and entity definitions are skipped, which also removes the external-entity and expansion risks a general parser would have to defend against. |
 | Books keyed by absolute path rather than by content digest | **Chosen** limitation; a moved or renamed book is treated as new |
 | Automatic colour correction, gamma, colour boost, scaling quality, page cache | **Observed** options in CDisplayEx's catalog ("Automatic color correction", "Gamma", "Vibrance", "Lanczos (better quality)", "Linear", "Nearest (faster)", "Cache pages") |
 | Colour boost implemented as a saturation matrix | **Chosen approximation**; a linear colour matrix cannot express perceptual vibrance |
