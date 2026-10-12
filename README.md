@@ -600,12 +600,20 @@ The app takes a few flags that make it verifiable without a human:
 
 ```
 src/core/      pure logic, no Electron and no DOM: page ordering, image header
-               parsing, spread grouping, fit and pan arithmetic
+               parsing, spread grouping, fit and pan arithmetic, panel detection,
+               ComicInfo, achievement rules, status text, thumbnail geometry
 src/main/      Electron main process (CommonJS), the archive/folder reader, and
                the pageforge:// protocol that serves page bytes and app assets
 src/renderer/  the viewer: DOM, input, chrome, and the pdf.js integration
 scripts/       fixture generator, launcher, smoke test
 ```
+
+The split is deliberate and has a history: the status bar once claimed a page the
+viewport was not showing, and once showed a zoom that contradicted the reading mode.
+Both were text, both were inside the renderer, and neither was reachable by a test.
+Composing that text and the thumbnail window arithmetic now live in `core/`, where
+they are checked directly — the renderer assigns the result and reads the page, and
+holds no copy of the rules.
 
 Two decisions worth knowing:
 
@@ -624,7 +632,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 278 unit, store, database, IPC, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
+npm test        # 305 unit, store, database, IPC, status, thumbnail, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding

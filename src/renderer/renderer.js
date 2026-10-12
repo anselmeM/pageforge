@@ -19,6 +19,13 @@ import { clampScale, fitScale, zoomStep } from "../core/fit.js";
 import { comicInfoLabel } from "../core/comicinfo.js";
 import { lensPosition, magnifierSample } from "../core/magnifier.js";
 import { detectPanels, isWorthGuiding, framePanel, panelStripRows, panelsFormStrip } from "../core/panels.js";
+import { describeStatus } from "../core/status.js";
+import {
+  railWidth,
+  revealScrollLeft,
+  thumbnailOffset,
+  thumbnailWindow,
+} from "../core/thumbnails.js";
 import { DEFAULT_PREFERENCES, describeHistoryEntry, resolveStartPage } from "../core/library.js";
 import {
   COMMAND_LABELS,
@@ -198,40 +205,30 @@ const panMargin = () => Math.min(120, viewportSize().height * 0.2);
 
 const updateStatus = () => {
   const spread = currentSpread();
-  // The column width is the zoom in vertical mode and the mode label already
-  // reports it, so the paged scale would only contradict it.
-  zoomLabel.textContent = verticalActive() ? "" : `${Math.round(state.scale * 100)}%`;
   const panels = currentPanels();
-  modeLabel.textContent = [
-    verticalActive()
-      ? stripActive()
-        ? "Panel strip"
-        : "Vertical scroll"
-      : state.doublePage && state.preferences.guidedView !== true
-        ? "Double page"
-        : "Single page",
-    state.rightToLeft ? "Right to left" : "Left to right",
-    verticalActive() ? `${Math.round(state.verticalZoom * 100)}% wide` : state.fitMode === "manual" ? "Zoom" : `Fit ${state.fitMode}`,
-    state.rotation === 0 || verticalActive() ? null : `${state.rotation}°`,
-    guidedActive() && panels !== null && isWorthGuiding(panels)
-      ? `Panel ${state.guidedStep + 1} / ${panels.length}`
-      : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
-  if (state.book === null || spread === null) {
-    pageLabel.textContent = "No book open";
-    bookLabel.textContent = "";
-    progressLabel.textContent = "";
-    return;
-  }
-  const first = spread.indices[0] + 1;
-  const last = spread.indices[spread.indices.length - 1] + 1;
-  const total = state.book.pages.length;
-  pageLabel.textContent = first === last ? `Page ${first} / ${total}` : `Pages ${first}–${last} / ${total}`;
-  bookLabel.textContent = state.book.displayName;
-  progressLabel.textContent = `${Math.round((last / total) * 100)}%`;
+  const status = describeStatus({
+    hasBook: state.book !== null && spread !== null,
+    displayName: state.book?.displayName,
+    firstPage: spread === null ? 1 : spread.indices[0] + 1,
+    lastPage: spread === null ? 1 : spread.indices[spread.indices.length - 1] + 1,
+    totalPages: state.book?.pages.length ?? 0,
+    rightToLeft: state.rightToLeft,
+    doublePage: state.doublePage,
+    vertical: verticalActive(),
+    strip: stripActive(),
+    guided: guidedActive(),
+    fitMode: state.fitMode,
+    rotation: state.rotation,
+    zoom: state.scale,
+    verticalZoom: state.verticalZoom,
+    panelIndex: state.guidedStep,
+    panelCount: panels?.length ?? 0,
+  });
+  modeLabel.textContent = status.modeText;
+  zoomLabel.textContent = status.zoomText;
+  pageLabel.textContent = status.pageText;
+  bookLabel.textContent = status.bookText;
+  progressLabel.textContent = status.progressText;
 };
 
 /** Push the current scale, rotation and offset onto the existing DOM nodes. */
@@ -863,26 +860,16 @@ const fillThumbnail = async (button) => {
  * though almost none of them can be seen. The rail takes the full scroll width so
  * the scrollbar still means the whole book, and the window slides as it scrolls.
  */
-const THUMB_WIDTH = 74;
-const THUMB_GAP = 6;
-const THUMB_SLOT = THUMB_WIDTH + THUMB_GAP;
-/** Thumbnails kept mounted either side of the visible window. */
-const THUMB_OVERSCAN = 4;
-
 let thumbRail = null;
 /** Mounted thumbnails, by page index. */
 const mountedThumbs = new Map();
 
-const thumbRange = () => {
-  const count = state.book?.pages.length ?? 0;
-  if (count === 0) return { first: 0, last: -1 };
-  const first = Math.max(0, Math.floor(thumbnailsEl.scrollLeft / THUMB_SLOT) - THUMB_OVERSCAN);
-  const last = Math.min(
-    count - 1,
-    Math.ceil((thumbnailsEl.scrollLeft + thumbnailsEl.clientWidth) / THUMB_SLOT) + THUMB_OVERSCAN,
-  );
-  return { first, last };
-};
+const thumbRange = () =>
+  thumbnailWindow({
+    count: state.book?.pages.length ?? 0,
+    scrollLeft: thumbnailsEl.scrollLeft,
+    viewportWidth: thumbnailsEl.clientWidth,
+  });
 
 const mountThumb = (index) => {
   const page = state.book.pages[index];
@@ -891,7 +878,7 @@ const mountThumb = (index) => {
   button.className = "thumb";
   button.dataset.page = String(index);
   button.title = `${index + 1} · ${page.name}`;
-  button.style.left = `${index * THUMB_SLOT}px`;
+  button.style.left = `${thumbnailOffset(index)}px`;
   button.addEventListener("click", () => goToPage(index + 1));
   const number = document.createElement("span");
   number.className = "thumb-number";
@@ -927,8 +914,7 @@ const buildThumbnails = () => {
   const count = state.book.pages.length;
   thumbRail = document.createElement("div");
   thumbRail.id = "thumb-rail";
-  // The last thumbnail needs no trailing gap.
-  thumbRail.style.width = `${Math.max(0, count * THUMB_SLOT - THUMB_GAP)}px`;
+  thumbRail.style.width = `${railWidth(count)}px`;
   thumbnailsEl.append(thumbRail);
   syncThumbnails();
   updateThumbnailHighlight();
@@ -936,12 +922,12 @@ const buildThumbnails = () => {
 
 /** Scroll the strip just far enough to show a page. */
 const revealThumbnail = (index) => {
-  const left = index * THUMB_SLOT;
-  const right = left + THUMB_WIDTH;
-  const viewLeft = thumbnailsEl.scrollLeft;
-  const viewRight = viewLeft + thumbnailsEl.clientWidth;
-  if (left < viewLeft) thumbnailsEl.scrollLeft = left;
-  else if (right > viewRight) thumbnailsEl.scrollLeft = right - thumbnailsEl.clientWidth;
+  const scrollLeft = revealScrollLeft({
+    index,
+    scrollLeft: thumbnailsEl.scrollLeft,
+    viewportWidth: thumbnailsEl.clientWidth,
+  });
+  if (scrollLeft !== null) thumbnailsEl.scrollLeft = scrollLeft;
 };
 
 const updateThumbnailHighlight = () => {
