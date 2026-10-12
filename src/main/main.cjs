@@ -250,10 +250,25 @@ const loadTarget = async (targetPath) => {
     });
     // A PDF's page count is only known once the viewer has parsed it, so the
     // recorded page is passed through unclamped and the viewer clamps it.
-    return { ...book, resumePage: entry.lastPage, preferences: store.preferences() };
+    return {
+      ...book,
+      resumePage: entry.lastPage,
+      preferences: store.preferences(),
+      bookSettings: store.bookSettings(targetPath),
+    };
   }
   const { openTarget } = await reader();
-  const opened = await openTarget(targetPath);
+  // Opening a large archive can take a while, so the viewer is told how far it
+  // has got rather than left on a blank screen.
+  let lastReported = 0;
+  const opened = await openTarget(targetPath, {
+    onProgress: (progress) => {
+      const now = Date.now();
+      if (now - lastReported < 80 && progress.total > 0 && progress.done < progress.total) return;
+      lastReported = now;
+      send("app:open-progress", progress);
+    },
+  });
   session = opened;
   const book = bookPayload(opened);
   const entry = await store.recordOpen({
@@ -262,7 +277,12 @@ const loadTarget = async (targetPath) => {
     kind: book.kind,
     pages: book.pages.length,
   });
-  return { ...book, resumePage: entry.lastPage, preferences: store.preferences() };
+  return {
+    ...book,
+    resumePage: entry.lastPage,
+    preferences: store.preferences(),
+    bookSettings: store.bookSettings(targetPath),
+  };
 };
 
 /** Render a failure for the viewer without leaking a stack trace. */
@@ -626,8 +646,14 @@ const registerIpc = () => {
       preferences: store.preferences(),
       history: store.history(),
       bookmarks: targetPath === null || targetPath === undefined ? [] : store.bookmarks(targetPath),
+      bookSettings:
+        targetPath === null || targetPath === undefined ? {} : store.bookSettings(targetPath),
       loadProblem: store.loadProblem,
     };
+  });
+  ipcMain.handle("library:book-settings:set", async (_event, targetPath, settings) => {
+    const store = await ensureLibrary();
+    return store.setBookSettings(targetPath, settings);
   });
   ipcMain.handle("library:progress", async (_event, targetPath, page) => {
     const store = await ensureLibrary();

@@ -26,6 +26,7 @@ export const REBINDABLE_COMMANDS = [
   "toggle-magnifier",
   "toggle-slideshow",
   "toggle-guided",
+  "toggle-vertical",
 ];
 
 /** Human labels for the shortcuts dialog. */
@@ -47,6 +48,7 @@ export const COMMAND_LABELS = {
   "toggle-magnifier": "Magnifier",
   "toggle-slideshow": "Slideshow",
   "toggle-guided": "Guided view",
+  "toggle-vertical": "Vertical scroll",
 };
 
 /** A command is bound to a primary key and optionally a second one. */
@@ -68,6 +70,7 @@ export const DEFAULT_SHORTCUTS = {
   "toggle-magnifier": { primary: "M", secondary: null },
   "toggle-slideshow": { primary: "S", secondary: null },
   "toggle-guided": { primary: "G", secondary: null },
+  "toggle-vertical": { primary: "V", secondary: null },
 };
 
 const NAMED_KEYS = new Set([

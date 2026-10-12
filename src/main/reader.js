@@ -279,7 +279,7 @@ const probeZipEntry = async (zipfile, entry) => {
   return imageSize(bytes.subarray(0, Math.min(INITIAL_PROBE_BYTES, bytes.length))) ?? imageSize(bytes);
 };
 
-const openZipArchive = async (targetPath) => {
+const openZipArchive = async (targetPath, onProgress) => {
   const extension = extensionOf(targetPath);
   if (!ARCHIVE_EXTENSIONS.has(extension)) {
     throw new ReaderError(
@@ -296,9 +296,14 @@ const openZipArchive = async (targetPath) => {
     if (names.length === 0) {
       throw new ReaderError("no-pages", "This archive contains no readable page images.", { targetPath });
     }
+    // Each page is opened once to read its dimensions, which is the slow part of
+    // opening a large archive, so it is reported as it goes.
+    let probed = 0;
     const pages = await mapConcurrent(names, PROBE_CONCURRENCY, async (name, index) => {
       const entry = entries.get(name);
       const size = await probeZipEntry(zipfile, entry);
+      probed += 1;
+      onProgress?.({ phase: "Reading page index", done: probed, total: names.length });
       return {
         index,
         name,
@@ -453,11 +458,19 @@ const openStagedArchive = async (targetPath, extract, format) => {
 };
 
 /** Route an archive to the backend that owns its extension. */
-const openArchive = async (targetPath) => {
+const openArchive = async (targetPath, onProgress) => {
   const extension = extensionOf(targetPath);
-  if (ARCHIVE_EXTENSIONS.has(extension)) return openZipArchive(targetPath);
-  if (RAR_EXTENSIONS.has(extension)) return openStagedArchive(targetPath, extractRar, "rar");
-  if (SEVEN_ZIP_EXTENSIONS.has(extension)) return openStagedArchive(targetPath, extractSevenZip, "7z");
+  if (ARCHIVE_EXTENSIONS.has(extension)) return openZipArchive(targetPath, onProgress);
+  // RAR and 7z are unpacked by a decoder with no progress feed, so the only
+  // honest report is that the whole archive is being staged.
+  if (RAR_EXTENSIONS.has(extension)) {
+    onProgress?.({ phase: "Unpacking RAR archive", done: 0, total: 0 });
+    return openStagedArchive(targetPath, extractRar, "rar");
+  }
+  if (SEVEN_ZIP_EXTENSIONS.has(extension)) {
+    onProgress?.({ phase: "Unpacking 7z archive", done: 0, total: 0 });
+    return openStagedArchive(targetPath, extractSevenZip, "7z");
+  }
   throw new ReaderError(
     "format-not-supported-yet",
     `"${extension || "this file"}" archives are not readable yet; CBZ, ZIP, CBR, RAR, CB7 and 7Z are supported.`,
@@ -466,11 +479,12 @@ const openArchive = async (targetPath) => {
 };
 
 /** Open a folder of images or a supported comic archive. */
-export const openTarget = async (targetPath) => {
+export const openTarget = async (targetPath, options = {}) => {
+  const { onProgress } = options;
   const info = await stat(targetPath);
   if (info.isDirectory()) return openFolder(targetPath);
   if (!info.isFile()) {
     throw new ReaderError("unsupported-target", "Only files and folders can be opened.", { targetPath });
   }
-  return openArchive(targetPath);
+  return openArchive(targetPath, onProgress);
 };

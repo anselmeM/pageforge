@@ -81,3 +81,74 @@ export const averageChannelMeans = (pixels) => {
   if (count === 0) return null;
   return { r: red / count, g: green / count, b: blue / count };
 };
+
+const clamp = (value, low, high, fallback) => {
+  const number = Number.isFinite(value) ? value : fallback;
+  return Math.min(high, Math.max(low, number));
+};
+
+/**
+ * Scan-enhancement parameters: brightness, contrast, grayscale, sepia and
+ * sharpening. These are independent of colour correction — they are about
+ * making a poor scan readable, not about neutralising a cast.
+ *
+ * Brightness and contrast fold into one linear stage, which is the standard
+ * `value * (brightness * contrast) + 0.5 * (1 - contrast)` curve.
+ */
+export const scanFilterParameters = (preferences) => {
+  const brightness = clamp(preferences?.brightness, 0.5, 2, 1);
+  const contrast = clamp(preferences?.contrast, 0.5, 2, 1);
+  const grayscale = clamp(preferences?.grayscale, 0, 1, 0);
+  const sepia = clamp(preferences?.sepia, 0, 1, 0);
+  const sharpen = preferences?.sharpen === true;
+  return {
+    active: brightness !== 1 || contrast !== 1 || grayscale > 0 || sepia > 0 || sharpen,
+    slope: brightness * contrast,
+    intercept: 0.5 * (1 - contrast),
+    /** Saturation matrix value that removes `grayscale` of the colour. */
+    saturation: 1 - grayscale,
+    sepia,
+    sharpen,
+    sharpenAmount: clamp(preferences?.sharpenAmount, 0, 1, 0.35),
+  };
+};
+
+/** Identity 4x5 colour matrix, in feColorMatrix's `values` order. */
+export const IDENTITY_MATRIX = [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
+
+/** The classic sepia matrix, applied at full strength. */
+const SEPIA_MATRIX = [
+  0.393, 0.769, 0.189, 0, 0,
+  0.349, 0.686, 0.168, 0, 0,
+  0.272, 0.534, 0.131, 0, 0,
+  0, 0, 0, 1, 0,
+];
+
+/**
+ * Sepia blended between no effect and full sepia, as one matrix.
+ *
+ * Interpolating the matrix rather than chaining a partial-opacity node keeps the
+ * whole chain a single pass, and makes the blend a pure function of the amount.
+ */
+export const sepiaMatrix = (amount) => {
+  const strength = clamp(amount, 0, 1, 0);
+  return IDENTITY_MATRIX.map(
+    (value, index) => value + (SEPIA_MATRIX[index] - value) * strength,
+  );
+};
+
+/**
+ * A 3x3 unsharp kernel scaled by `amount`: the centre gains the neighbour
+ * weights, so total luminance is preserved and only edge contrast changes.
+ */
+export const sharpenKernel = (amount) => {
+  const strength = clamp(amount, 0, 1, 0);
+  // settle: -0 is not 0 to a strict comparison, and an identity kernel should
+  // read as plain zeros.
+  const negative = strength === 0 ? 0 : -strength;
+  return [
+    0, negative, 0,
+    negative, 1 + 4 * strength, negative,
+    0, negative, 0,
+  ];
+};

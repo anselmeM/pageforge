@@ -8,7 +8,9 @@ import {
   bookmarksFor,
   describeHistoryEntry,
   findBookmarkAtPage,
+  normalizeBookSettings,
   normalizePathKey,
+  pruneBookSettings,
   pruneBookmarks,
   resolveStartPage,
   upsertHistory,
@@ -110,5 +112,54 @@ describe("default preferences", () => {
   it("resumes by default and keeps the thumbnail strip hidden", () => {
     assert.equal(DEFAULT_PREFERENCES.resumeLastPage, true);
     assert.equal(DEFAULT_PREFERENCES.showThumbnails, false);
+  });
+
+  it("starts with neutral scan filters and no vertical scroll", () => {
+    assert.equal(DEFAULT_PREFERENCES.verticalScroll, false);
+    assert.equal(DEFAULT_PREFERENCES.brightness, 1);
+    assert.equal(DEFAULT_PREFERENCES.contrast, 1);
+    assert.equal(DEFAULT_PREFERENCES.grayscale, 0);
+    assert.equal(DEFAULT_PREFERENCES.sepia, 0);
+    assert.equal(DEFAULT_PREFERENCES.sharpen, false);
+    assert.equal(DEFAULT_PREFERENCES.rememberPerBook, true);
+  });
+});
+
+describe("per-book layout", () => {
+  it("keeps only recognised fields", () => {
+    const settings = normalizeBookSettings({
+      doublePage: true,
+      rightToLeft: true,
+      fitMode: "width",
+      rotation: 90,
+      nonsense: "ignored",
+      guidedView: "yes",
+    });
+    assert.deepEqual(settings, {
+      doublePage: true,
+      rightToLeft: true,
+      fitMode: "width",
+      rotation: 90,
+    });
+  });
+
+  it("rejects an unknown fit mode and clamps rotation", () => {
+    assert.equal(normalizeBookSettings({ fitMode: "diagonal" }).fitMode, undefined);
+    assert.equal(normalizeBookSettings({ rotation: 1000 }).rotation, 359);
+    assert.equal(normalizeBookSettings({ rotation: -5 }).rotation, 0);
+  });
+
+  it("returns nothing usable for junk input", () => {
+    assert.deepEqual(normalizeBookSettings(null), {});
+    assert.deepEqual(normalizeBookSettings("nope"), {});
+    assert.deepEqual(normalizeBookSettings({}), {});
+  });
+
+  it("drops layout for books that are no longer remembered", () => {
+    const kept = pruneBookSettings(
+      { "a.cbz": { doublePage: true }, "b.cbz": { rightToLeft: true } },
+      [{ pathKey: "a.cbz" }],
+    );
+    assert.deepEqual(Object.keys(kept), ["a.cbz"]);
   });
 });

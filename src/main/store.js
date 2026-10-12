@@ -16,8 +16,10 @@ import {
   DEFAULT_PREFERENCES,
   bookmarksFor,
   coercePreference,
+  normalizeBookSettings,
   normalizePreferences,
   normalizePathKey,
+  pruneBookSettings,
   pruneBookmarks,
   upsertHistory,
 } from "../core/library.js";
@@ -31,6 +33,7 @@ const emptyLibrary = () => ({
   shortcuts: { ...DEFAULT_SHORTCUTS },
   history: [],
   bookmarks: {},
+  bookSettings: {},
 });
 
 /** Accept only the shapes this module writes; anything else falls back. */
@@ -59,6 +62,12 @@ const sanitize = (value) => {
           Number.isInteger(bookmark.page),
       );
       if (bookmarks.length > 0) library.bookmarks[pathKey] = bookmarks;
+    }
+  }
+  if (value.bookSettings !== null && typeof value.bookSettings === "object") {
+    for (const [pathKey, settings] of Object.entries(value.bookSettings)) {
+      const normalized = normalizeBookSettings(settings);
+      if (Object.keys(normalized).length > 0) library.bookSettings[pathKey] = normalized;
     }
   }
   return library;
@@ -142,6 +151,7 @@ export const createStore = async ({ directory }) => {
       };
       library.history = upsertHistory(library.history, entry);
       library.bookmarks = pruneBookmarks(library.bookmarks, library.history);
+      library.bookSettings = pruneBookSettings(library.bookSettings, library.history);
       await persist();
       return structuredClone(entry);
     },
@@ -156,6 +166,26 @@ export const createStore = async ({ directory }) => {
       entry.readAt = new Date().toISOString();
       await persist();
       return true;
+    },
+
+    /**
+     * Layout remembered for a book, or {} when it has none.
+     *
+     * A manga volume should open right-to-left whatever the last book was, so
+     * this is per book rather than part of the global preferences.
+     */
+    bookSettings(targetPath) {
+      return { ...(library.bookSettings[normalizePathKey(targetPath)] ?? {}) };
+    },
+
+    /** Merge layout for a book, dropping anything unrecognised. */
+    async setBookSettings(targetPath, settings) {
+      const pathKey = normalizePathKey(targetPath);
+      const merged = normalizeBookSettings({ ...library.bookSettings[pathKey], ...settings });
+      if (Object.keys(merged).length === 0) delete library.bookSettings[pathKey];
+      else library.bookSettings[pathKey] = merged;
+      await persist();
+      return { ...merged };
     },
 
     async addBookmark(targetPath, page, name) {

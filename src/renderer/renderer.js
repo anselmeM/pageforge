@@ -6,7 +6,15 @@
  * be tested without a window; this file only translates that state into DOM.
  */
 
-import { IDENTITY_GAINS, averageChannelMeans, colorFilterParameters, computeWhiteBalanceGains } from "../core/color.js";
+import {
+  IDENTITY_GAINS,
+  averageChannelMeans,
+  colorFilterParameters,
+  computeWhiteBalanceGains,
+  scanFilterParameters,
+  sepiaMatrix,
+  sharpenKernel,
+} from "../core/color.js";
 import { clampScale, fitScale, zoomStep } from "../core/fit.js";
 import { lensPosition, magnifierSample } from "../core/magnifier.js";
 import { detectPanels, isWorthGuiding, framePanel } from "../core/panels.js";
@@ -31,6 +39,7 @@ const emptyState = document.getElementById("empty-state");
 const pageLabel = document.getElementById("page-label");
 const bookLabel = document.getElementById("book-label");
 const zoomLabel = document.getElementById("zoom-label");
+const progressLabel = document.getElementById("progress-label");
 const modeLabel = document.getElementById("mode-label");
 const toastEl = document.getElementById("toast");
 const gotoDialog = document.getElementById("goto-dialog");
@@ -55,13 +64,28 @@ const prefGuidedFill = document.getElementById("pref-guided-fill");
 const prefGuidedPan = document.getElementById("pref-guided-pan");
 const prefGuidedEasing = document.getElementById("pref-guided-easing");
 const prefGuidedSpotlight = document.getElementById("pref-guided-spotlight");
-/** The three per-channel transfer functions inside the colour filter. */
-const colorCurves = {
-  r: document.querySelector("#pf-color feFuncR"),
-  g: document.querySelector("#pf-color feFuncG"),
-  b: document.querySelector("#pf-color feFuncB"),
+const prefVertical = document.getElementById("pref-vertical");
+const prefBrightness = document.getElementById("pref-brightness");
+const prefContrast = document.getElementById("pref-contrast");
+const prefGrayscale = document.getElementById("pref-grayscale");
+const prefSepia = document.getElementById("pref-sepia");
+const prefSharpen = document.getElementById("pref-sharpen");
+const prefRemember = document.getElementById("pref-remember");
+/** The three per-channel transfer functions inside each transfer stage. */
+const toneCurves = {
+  r: document.querySelector("#pf-tone feFuncR"),
+  g: document.querySelector("#pf-tone feFuncG"),
+  b: document.querySelector("#pf-tone feFuncB"),
 };
+const gammaCurves = {
+  r: document.querySelector("#pf-gamma feFuncR"),
+  g: document.querySelector("#pf-gamma feFuncG"),
+  b: document.querySelector("#pf-gamma feFuncB"),
+};
+const grayscaleMatrix = document.getElementById("pf-grayscale");
 const saturationMatrix = document.getElementById("pf-saturation");
+const sepiaMatrixElement = document.getElementById("pf-sepia");
+const sharpenKernelElement = document.getElementById("pf-sharpen");
 const magnifierEl = document.getElementById("magnifier");
 const magnifierContext = magnifierEl.getContext("2d");
 const shortcutList = document.getElementById("shortcut-list");
@@ -115,6 +139,10 @@ const state = {
   fullscreen: false,
   /** True while a panel camera, rather than a fit mode, drives the transform. */
   guidedCamera: false,
+  /** Zoom multiplier for the vertical column. */
+  verticalZoom: 1,
+  /** Which vertical pages currently hold a rendered PDF bitmap. */
+  verticalRendered: new Map(),
   /** Panels detected for a page, by page index. */
   guidedPanels: new Map(),
   /** Which panel of the current page the camera is on. */
@@ -157,13 +185,19 @@ const panMargin = () => Math.min(120, viewportSize().height * 0.2);
 
 const updateStatus = () => {
   const spread = currentSpread();
-  zoomLabel.textContent = `${Math.round(state.scale * 100)}%`;
+  // The column width is the zoom in vertical mode and the mode label already
+  // reports it, so the paged scale would only contradict it.
+  zoomLabel.textContent = verticalActive() ? "" : `${Math.round(state.scale * 100)}%`;
   const panels = currentPanels();
   modeLabel.textContent = [
-    state.doublePage && state.preferences.guidedView !== true ? "Double page" : "Single page",
+    verticalActive()
+      ? "Vertical scroll"
+      : state.doublePage && state.preferences.guidedView !== true
+        ? "Double page"
+        : "Single page",
     state.rightToLeft ? "Right to left" : "Left to right",
-    state.fitMode === "manual" ? "Zoom" : `Fit ${state.fitMode}`,
-    state.rotation === 0 ? null : `${state.rotation}°`,
+    verticalActive() ? `${Math.round(state.verticalZoom * 100)}% wide` : state.fitMode === "manual" ? "Zoom" : `Fit ${state.fitMode}`,
+    state.rotation === 0 || verticalActive() ? null : `${state.rotation}°`,
     guidedActive() && panels !== null && isWorthGuiding(panels)
       ? `Panel ${state.guidedStep + 1} / ${panels.length}`
       : null,
@@ -174,6 +208,7 @@ const updateStatus = () => {
   if (state.book === null || spread === null) {
     pageLabel.textContent = "No book open";
     bookLabel.textContent = "";
+    progressLabel.textContent = "";
     return;
   }
   const first = spread.indices[0] + 1;
@@ -181,6 +216,7 @@ const updateStatus = () => {
   const total = state.book.pages.length;
   pageLabel.textContent = first === last ? `Page ${first} / ${total}` : `Pages ${first}–${last} / ${total}`;
   bookLabel.textContent = state.book.displayName;
+  progressLabel.textContent = `${Math.round((last / total) * 100)}%`;
 };
 
 /** Push the current scale, rotation and offset onto the existing DOM nodes. */
@@ -281,17 +317,33 @@ const renderCanvasNode = async (node, resolution) => {
 
 /* Colour handling ---------------------------------------------------------- */
 
-/** Push the current settings into the SVG filter and attach it to the spread. */
+/** Push the current colour and scan settings into the SVG filter. */
 const applyColorFilter = () => {
-  const parameters = colorFilterParameters(state.preferences, state.colorGains);
-  for (const curve of Object.values(colorCurves)) {
-    curve.setAttribute("exponent", String(parameters.exponent));
+  const color = colorFilterParameters(state.preferences, state.colorGains);
+  const scan = scanFilterParameters(state.preferences);
+
+  // Colour correction: white balance gain and gamma per channel.
+  for (const curve of Object.values(gammaCurves)) {
+    curve.setAttribute("exponent", String(color.exponent));
   }
-  colorCurves.r.setAttribute("amplitude", String(parameters.r));
-  colorCurves.g.setAttribute("amplitude", String(parameters.g));
-  colorCurves.b.setAttribute("amplitude", String(parameters.b));
-  saturationMatrix.setAttribute("values", String(parameters.saturation));
-  spreadEl.style.filter = parameters.active ? "url(#pf-color)" : "";
+  gammaCurves.r.setAttribute("amplitude", String(color.r));
+  gammaCurves.g.setAttribute("amplitude", String(color.g));
+  gammaCurves.b.setAttribute("amplitude", String(color.b));
+  saturationMatrix.setAttribute("values", String(color.saturation));
+
+  // Scan enhancement: brightness and contrast share one linear stage.
+  for (const curve of Object.values(toneCurves)) {
+    curve.setAttribute("slope", String(scan.slope));
+    curve.setAttribute("intercept", String(scan.intercept));
+  }
+  grayscaleMatrix.setAttribute("values", String(scan.saturation));
+  sepiaMatrixElement.setAttribute("values", sepiaMatrix(scan.sepia).join(" "));
+  sharpenKernelElement.setAttribute(
+    "kernelMatrix",
+    scan.sharpen ? sharpenKernel(scan.sharpenAmount).join(" ") : "0 0 0 0 1 0 0 0 0",
+  );
+
+  spreadEl.style.filter = color.active || scan.active ? "url(#pf-color)" : "";
 };
 
 const colorSampleCanvas = document.createElement("canvas");
@@ -369,6 +421,17 @@ const learnDimensions = (page, image) => {
 };
 
 const renderSpread = () => {
+  if (verticalActive()) {
+    // The column owns the stage; the paged DOM is left empty.
+    spreadEl.replaceChildren();
+    for (const node of state.nodes) node.currentTask?.cancel?.();
+    state.nodes = [];
+    spreadEl.hidden = true;
+    renderVertical();
+    updateStatus();
+    return;
+  }
+  spreadEl.hidden = false;
   const spread = currentSpread();
   for (const node of state.nodes) node.currentTask?.cancel?.();
   state.nodes = [];
@@ -431,14 +494,28 @@ const renderSpread = () => {
 const rebuildSpreads = () => {
   state.spreads = buildSpreads(
     state.book.pages.map((page) => pageSize(page)),
-    // Guided view frames one page at a time, so pairing is suspended while it
-    // is on; the double-page preference is kept for when it is turned off.
-    { doublePage: state.doublePage && state.preferences.guidedView !== true, coverAlone: false },
+    // Guided view frames one page at a time and the vertical column is one page
+    // per row, so pairing is suspended for both; the double-page preference is
+    // kept for when they are turned off.
+    {
+      doublePage:
+        state.doublePage &&
+        state.preferences.guidedView !== true &&
+        state.preferences.verticalScroll !== true,
+      coverAlone: false,
+    },
   );
   state.spreadIndex = Math.min(state.spreadIndex, Math.max(0, state.spreads.length - 1));
 };
 
 const applyFit = () => {
+  // In vertical mode there is no page-shaped viewport to fit; the column width
+  // is the zoom, so a fit simply re-lays the column.
+  if (verticalActive()) {
+    renderVertical();
+    updateStatus();
+    return;
+  }
   const spread = currentSpread();
   if (spread === null) return;
   state.scale = clampScale(fitScale(state.fitMode === "manual" ? "screen" : state.fitMode, spreadNaturalSize(spread), viewportSize()));
@@ -509,6 +586,11 @@ const reportReady = async () => {
     // The window's real state, not what the viewer thinks it asked for.
     fullscreen: await api.isFullscreen().catch(() => state.fullscreen),
     guidedView: state.preferences.guidedView === true,
+    verticalScroll: state.preferences.verticalScroll === true,
+    verticalPages: scrollEl.hidden ? 0 : scrollEl.childElementCount,
+    progress: progressLabel.textContent,
+    pageText: pageLabel.textContent,
+    zoomText: zoomLabel.textContent,
     guidedPanels: currentPanels()?.length ?? 0,
     guidedStep: state.guidedStep,
     // Diagnostic: the boxes themselves, in page coordinates.
@@ -521,9 +603,28 @@ const reportReady = async () => {
   });
 };
 
+/** Layout for the open book, as the reader has arranged it. */
+const currentBookSettings = () => ({
+  doublePage: state.doublePage,
+  rightToLeft: state.rightToLeft,
+  verticalScroll: state.preferences.verticalScroll === true,
+  guidedView: state.preferences.guidedView === true,
+  fitMode: state.fitMode,
+  rotation: state.rotation,
+});
+
+/** Persist the current layout for this book, if the reader wants that. */
+const persistBookSettings = () => {
+  const target = state.book?.targetPath;
+  if (target === null || target === undefined) return;
+  if (state.preferences.rememberPerBook === false) return;
+  void api.setBookSettings(target, currentBookSettings());
+};
+
 const applyBook = async (book) => {
   const token = (applyToken += 1);
   stopSlideshow();
+  hideOpening();
   state.pdf = null;
   state.preferences = book.preferences ?? state.preferences;
   if (book.kind === "pdf") {
@@ -551,6 +652,23 @@ const applyBook = async (book) => {
   state.guidedPanels.clear();
   state.guidedStep = 0;
   state.guidedCamera = false;
+
+  // Layout remembered for this book wins over the global defaults, so a manga
+  // volume opens right-to-left whatever the last book was.
+  const remembered = book.bookSettings ?? {};
+  if (state.preferences.rememberPerBook !== false) {
+    if (typeof remembered.doublePage === "boolean") state.doublePage = remembered.doublePage;
+    if (typeof remembered.rightToLeft === "boolean") state.rightToLeft = remembered.rightToLeft;
+    if (typeof remembered.verticalScroll === "boolean") {
+      state.preferences = { ...state.preferences, verticalScroll: remembered.verticalScroll };
+    }
+    if (typeof remembered.guidedView === "boolean") {
+      state.preferences = { ...state.preferences, guidedView: remembered.guidedView };
+    }
+    if (typeof remembered.rotation === "number") state.rotation = remembered.rotation;
+    if (typeof remembered.fitMode === "string") state.fitMode = remembered.fitMode;
+  }
+
   rebuildSpreads();
   renderSpread();
   applyFit();
@@ -791,6 +909,10 @@ const showPreferenceValues = () => {
   document.getElementById("pref-sensitivity-value").textContent = Number(prefSensitivity.value).toFixed(2);
   document.getElementById("pref-gamma-value").textContent = Number(prefGamma.value).toFixed(2);
   document.getElementById("pref-vibrance-value").textContent = Number(prefVibrance.value).toFixed(2);
+  document.getElementById("pref-brightness-value").textContent = Number(prefBrightness.value).toFixed(2);
+  document.getElementById("pref-contrast-value").textContent = Number(prefContrast.value).toFixed(2);
+  document.getElementById("pref-grayscale-value").textContent = Number(prefGrayscale.value).toFixed(2);
+  document.getElementById("pref-sepia-value").textContent = Number(prefSepia.value).toFixed(2);
 };
 
 const syncPreferenceControls = () => {
@@ -808,6 +930,13 @@ const syncPreferenceControls = () => {
   prefGuidedEasing.value = preferences.guidedEasing;
   prefGuidedSpotlight.checked = preferences.guidedSpotlight === true;
   document.getElementById("pref-guided-fill-value").textContent = Number(prefGuidedFill.value).toFixed(2);
+  prefVertical.checked = preferences.verticalScroll === true;
+  prefBrightness.value = String(preferences.brightness);
+  prefContrast.value = String(preferences.contrast);
+  prefGrayscale.value = String(preferences.grayscale);
+  prefSepia.value = String(preferences.sepia);
+  prefSharpen.checked = preferences.sharpen === true;
+  prefRemember.checked = preferences.rememberPerBook !== false;
   showPreferenceValues();
 };
 
@@ -846,6 +975,14 @@ const writePreference = async (key, value) => {
     positionSpotlight();
     updateStatus();
   }
+  if (key === "verticalScroll") {
+    state.verticalZoom = 1;
+    rebuildSpreads();
+    renderSpread();
+    applyFit();
+    syncToolbar();
+    persistBookSettings();
+  }
 };
 
 const wirePreferences = () => {
@@ -877,10 +1014,19 @@ const wirePreferences = () => {
     [prefSensitivity, "colorSensitivity"],
     [prefGamma, "gamma"],
     [prefVibrance, "vibrance"],
+    [prefBrightness, "brightness"],
+    [prefContrast, "contrast"],
+    [prefGrayscale, "grayscale"],
+    [prefSepia, "sepia"],
   ]) {
     element.addEventListener("input", () => showPreferenceValues());
     element.addEventListener("change", () => void writePreference(key, Number(element.value)));
   }
+  prefSharpen.addEventListener("change", () => void writePreference("sharpen", prefSharpen.checked));
+  prefVertical.addEventListener("change", () => void writePreference("verticalScroll", prefVertical.checked));
+  prefRemember.addEventListener("change", () =>
+    void writePreference("rememberPerBook", prefRemember.checked),
+  );
   document.getElementById("pref-close").addEventListener("click", () => preferencesDialog.close());
   document.getElementById("shortcut-reset").addEventListener("click", async () => {
     const shortcuts = await api.resetShortcuts();
@@ -1192,6 +1338,14 @@ const goToSpread = (index) => {
   // A new page starts at its first panel.
   state.guidedStep = 0;
   state.guidedCamera = false;
+  if (verticalActive()) {
+    scrollToVerticalPage(clamped);
+    renderVerticalPdfWindow(clamped);
+    updateStatus();
+    updateThumbnailHighlight();
+    reportProgress();
+    return;
+  }
   renderSpread();
   if (state.fitMode === "manual") layoutSpread();
   else applyFit();
@@ -1231,13 +1385,30 @@ const setScale = (nextScale, pointer = { x: 0, y: 0 }) => {
   syncToolbar();
 };
 
-const zoomIn = () => setScale(zoomStep(state.scale, 1));
-const zoomOut = () => setScale(zoomStep(state.scale, -1));
+const zoomIn = () => {
+  if (verticalActive()) {
+    state.verticalZoom = Math.min(4, state.verticalZoom * 1.25);
+    renderVertical();
+    updateStatus();
+    return;
+  }
+  setScale(zoomStep(state.scale, 1));
+};
+const zoomOut = () => {
+  if (verticalActive()) {
+    state.verticalZoom = Math.max(0.25, state.verticalZoom / 1.25);
+    renderVertical();
+    updateStatus();
+    return;
+  }
+  setScale(zoomStep(state.scale, -1));
+};
 
 const setFitMode = (mode) => {
   state.fitMode = mode;
   applyFit();
   syncToolbar();
+  persistBookSettings();
 };
 
 const actualSize = () => {
@@ -1246,12 +1417,14 @@ const actualSize = () => {
   state.offset = { x: 0, y: 0 };
   layoutSpread();
   syncToolbar();
+  persistBookSettings();
 };
 
 const rotate = (degrees) => {
   state.rotation = (((state.rotation + degrees) % 360) + 360) % 360;
   if (state.fitMode === "manual") layoutSpread();
   else applyFit();
+  persistBookSettings();
 };
 
 const toggleDoublePage = () => {
@@ -1263,15 +1436,151 @@ const toggleDoublePage = () => {
   if (state.fitMode === "manual") layoutSpread();
   else applyFit();
   syncToolbar();
+  persistBookSettings();
 };
 
 const toggleRightToLeft = () => {
   state.rightToLeft = !state.rightToLeft;
   renderSpread();
   syncToolbar();
+  persistBookSettings();
+};
+
+/* Vertical scrolling ------------------------------------------------------- */
+
+const scrollEl = document.getElementById("scroll");
+/** Pages kept rendered either side of the reader when scrolling a PDF. */
+const VERTICAL_PDF_WINDOW = 2;
+
+const verticalActive = () => state.preferences.verticalScroll === true && state.book !== null;
+
+/** Column width for the current zoom: fit the widest page to the stage. */
+const verticalColumnWidth = () => {
+  if (state.book === null) return 0;
+  const viewport = viewportSize();
+  const widest = state.book.pages.reduce((max, page) => Math.max(max, pageSize(page).width), 1);
+  return Math.max(80, Math.round(widest * ((viewport.width - 32) / widest) * state.verticalZoom));
+};
+
+const clearVertical = () => {
+  scrollEl.replaceChildren();
+  state.verticalRendered.clear();
+};
+
+/** Render the PDF pages around the reader, and clear the rest. */
+const renderVerticalPdfWindow = (current) => {
+  if (state.pdf === null) return;
+  const first = Math.max(0, current - VERTICAL_PDF_WINDOW);
+  const last = Math.min(state.book.pages.length - 1, current + VERTICAL_PDF_WINDOW);
+  for (const holder of scrollEl.children) {
+    const index = Number(holder.dataset.index);
+    const canvas = holder.firstElementChild;
+    if (canvas === null || canvas.tagName !== "CANVAS") continue;
+    if (index < first || index > last) {
+      if (state.verticalRendered.has(index)) {
+        canvas.width = 0;
+        canvas.height = 0;
+        state.verticalRendered.delete(index);
+      }
+      continue;
+    }
+    if (state.verticalRendered.get(index) === canvas.width) continue;
+    const page = state.book.pages[index];
+    void startPdfRender(state.pdf, page.index ?? index, canvas, verticalColumnWidth() / pageSize(page).width);
+    state.verticalRendered.set(index, canvas.width);
+  }
+};
+
+const renderVertical = () => {
+  if (!verticalActive()) {
+    scrollEl.hidden = true;
+    clearVertical();
+    return;
+  }
+  scrollEl.hidden = false;
+  const columnWidth = verticalColumnWidth();
+  if (scrollEl.childElementCount !== state.book.pages.length) {
+    clearVertical();
+    for (const [index, page] of state.book.pages.entries()) {
+      const holder = document.createElement("div");
+      holder.className = "scroll-page";
+      holder.dataset.index = String(index);
+      let element;
+      if (page.kind === "pdf") {
+        element = document.createElement("canvas");
+        element.className = "page-canvas";
+      } else {
+        element = document.createElement("img");
+        element.src = page.url;
+        element.alt = page.name;
+        element.draggable = false;
+        // A long comic should not decode every page up front.
+        element.loading = "lazy";
+        element.decoding = "async";
+        if (state.preferences.resampling === "nearest") element.classList.add("pixelated");
+        element.addEventListener("load", () => learnDimensions(page, element));
+        element.addEventListener("error", () => toast(`Could not display ${page.name}`));
+      }
+      holder.append(element);
+      scrollEl.append(holder);
+    }
+    if (state.pdf !== null) renderVerticalPdfWindow(state.spreadIndex);
+  }
+  for (const holder of scrollEl.children) {
+    const page = state.book.pages[Number(holder.dataset.index)];
+    const base = pageSize(page);
+    const height = Math.round((base.height * columnWidth) / Math.max(1, base.width));
+    holder.style.width = `${columnWidth}px`;
+    holder.style.height = `${height}px`;
+    const element = holder.firstElementChild;
+    element.style.width = `${columnWidth}px`;
+    element.style.height = `${height}px`;
+  }
+};
+
+/** Which page sits in the middle of the viewport. */
+const verticalPageAtCentre = () => {
+  const middle = scrollEl.scrollTop + scrollEl.clientHeight / 2;
+  let index = 0;
+  for (const holder of scrollEl.children) {
+    if (holder.offsetTop <= middle) index = Number(holder.dataset.index);
+    else break;
+  }
+  return index;
+};
+
+const scrollToVerticalPage = (index) => {
+  const holder = scrollEl.children[index];
+  if (holder === undefined) return;
+  scrollEl.scrollTop = holder.offsetTop;
 };
 
 /* Chrome ------------------------------------------------------------------- */
+
+const openingEl = document.getElementById("opening");
+const openingText = document.getElementById("opening-text");
+const openingBar = document.getElementById("opening-bar");
+
+/** Show how far an open has got, or that one is starting. */
+const showOpening = (progress = null) => {
+  if (progress === null) {
+    openingText.textContent = "Opening…";
+    openingBar.removeAttribute("value");
+    openingBar.textContent = "";
+  } else {
+    const determinate = progress.total > 0;
+    openingText.textContent = determinate
+      ? `${progress.phase} — ${progress.done} / ${progress.total}`
+      : `${progress.phase}…`;
+    if (determinate) openingBar.value = Math.round((progress.done / progress.total) * 100);
+    else openingBar.removeAttribute("value");
+  }
+  openingEl.hidden = false;
+};
+
+const hideOpening = () => {
+  openingEl.hidden = true;
+};
 
 let toastTimer = null;
 const toast = (message) => {
@@ -1288,6 +1597,7 @@ const syncToolbar = () => {
       (button.dataset.command === "toggle-rtl" && state.rightToLeft) ||
       (button.dataset.command === "toggle-thumbnails" && state.thumbnailsVisible) ||
       (button.dataset.command === "toggle-guided" && guidedActive()) ||
+      (button.dataset.command === "toggle-vertical" && verticalActive()) ||
       (button.dataset.command === "fit-screen" && state.fitMode === "screen");
     button.setAttribute("aria-pressed", String(Boolean(pressed)));
   }
@@ -1300,6 +1610,7 @@ const openViaDialog = async (folder) => {
     toast(result.error.message);
     return;
   }
+  showOpening();
   applyBook(result.book);
 };
 
@@ -1422,9 +1733,36 @@ const runCommand = async (command) => {
       if (state.preferences.magnifierVisible === true) showMagnifierAtCentre();
       else hideMagnifier();
       return;
+    case "toggle-vertical": {
+      const next = state.preferences.verticalScroll !== true;
+      let preferences = await api.setPreference("verticalScroll", next);
+      if (preferences !== null && typeof preferences === "object") state.preferences = preferences;
+      // Scrolling a column and stepping through panels are two ways to read the
+      // same page, so turning one on turns the other off.
+      if (next && state.preferences.guidedView === true) {
+        preferences = await api.setPreference("guidedView", false);
+        if (preferences !== null && typeof preferences === "object") state.preferences = preferences;
+        state.guidedCamera = false;
+        spotlightEl.hidden = true;
+      }
+      state.verticalZoom = 1;
+      rebuildSpreads();
+      renderSpread();
+      applyFit();
+      syncToolbar();
+      persistBookSettings();
+      toast(next ? "Vertical scroll" : "Page by page");
+      return;
+    }
     case "toggle-guided": {
       const preferences = await api.setPreference("guidedView", !state.preferences.guidedView);
       if (preferences !== null && typeof preferences === "object") state.preferences = preferences;
+      // The column and the panel camera are mutually exclusive.
+      if (state.preferences.guidedView === true && state.preferences.verticalScroll === true) {
+        const updated = await api.setPreference("verticalScroll", false);
+        if (updated !== null && typeof updated === "object") state.preferences = updated;
+        clearVertical();
+      }
       state.guidedPanels.clear();
       state.guidedStep = 0;
       state.guidedCamera = false;
@@ -1443,6 +1781,7 @@ const runCommand = async (command) => {
         // The page is still loading; the camera applies when it arrives.
         toast("Guided view on");
       }
+      persistBookSettings();
       return;
     }
     case "toggle-slideshow":
@@ -1660,10 +1999,37 @@ const wireDrop = () => {
       toast("Could not resolve the dropped path.");
       return;
     }
+    showOpening();
     const result = await api.openBook(targetPath);
     if (result.ok) applyBook(result.book);
-    else toast(result.error.message);
+    else {
+      hideOpening();
+      toast(result.error.message);
+    }
   });
+};
+
+/** Track which page the reader has scrolled to in the vertical column. */
+const wireVerticalScroll = () => {
+  let scheduled = false;
+  scrollEl.addEventListener(
+    "scroll",
+    () => {
+      if (scheduled || !verticalActive()) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        const index = verticalPageAtCentre();
+        if (index === state.spreadIndex) return;
+        state.spreadIndex = index;
+        renderVerticalPdfWindow(index);
+        updateStatus();
+        updateThumbnailHighlight();
+        reportProgress();
+      });
+    },
+    { passive: true },
+  );
 };
 
 const wireResize = () => {
@@ -1688,6 +2054,7 @@ const init = async () => {
   wireToolbar();
   wireDrop();
   wireResize();
+  wireVerticalScroll();
 
   api.onCommand(runCommand);
   api.on("app:book-opened", (book) => applyBookSafely(book));
@@ -1695,6 +2062,7 @@ const init = async () => {
     toast(error.message);
     api.reportError(error);
   });
+  api.on("app:open-progress", (progress) => showOpening(progress));
   api.on("app:fullscreen", (value) => {
     const wasFullscreen = state.fullscreen;
     state.fullscreen = Boolean(value);

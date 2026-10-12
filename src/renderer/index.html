@@ -14,17 +14,36 @@
          to page images and to PDF canvases. -->
     <svg class="filter-defs" aria-hidden="true">
       <filter id="pf-color" color-interpolation-filters="sRGB">
-        <feComponentTransfer>
+        <feConvolveMatrix
+          id="pf-sharpen"
+          order="3"
+          kernelMatrix="0 0 0 0 1 0 0 0 0"
+          preserveAlpha="true"
+          edgeMode="duplicate"
+        />
+        <feComponentTransfer id="pf-tone">
+          <feFuncR type="linear" slope="1" intercept="0" />
+          <feFuncG type="linear" slope="1" intercept="0" />
+          <feFuncB type="linear" slope="1" intercept="0" />
+        </feComponentTransfer>
+        <feComponentTransfer id="pf-gamma">
           <feFuncR type="gamma" amplitude="1" exponent="1" offset="0" />
           <feFuncG type="gamma" amplitude="1" exponent="1" offset="0" />
           <feFuncB type="gamma" amplitude="1" exponent="1" offset="0" />
         </feComponentTransfer>
+        <feColorMatrix id="pf-grayscale" type="saturate" values="1" />
         <feColorMatrix id="pf-saturation" type="saturate" values="1" />
+        <feColorMatrix
+          id="pf-sepia"
+          type="matrix"
+          values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0"
+        />
       </filter>
     </svg>
 
     <div id="stage">
       <div id="spread"></div>
+      <div id="scroll" hidden></div>
       <div id="zones">
         <div class="zone" data-zone="previous" title="Previous page"></div>
         <div class="zone" data-zone="next" title="Next page"></div>
@@ -36,6 +55,10 @@
       </p>
       <canvas id="magnifier" hidden></canvas>
       <div id="spotlight" hidden></div>
+      <div id="opening" hidden>
+        <span id="opening-text">Opening…</span>
+        <progress id="opening-bar" max="100" value="0"></progress>
+      </div>
     </div>
 
     <div id="thumbnails" hidden></div>
@@ -59,6 +82,7 @@
       <button type="button" data-command="toggle-double" title="Double page">2&#8203;up</button>
       <button type="button" data-command="toggle-rtl" title="Japanese reading (right to left)">RTL</button>
       <button type="button" data-command="toggle-guided" title="Guided view — step through panels (G)">Panels</button>
+      <button type="button" data-command="toggle-vertical" title="Vertical scroll — one continuous column (V)">Scroll</button>
       <button type="button" data-command="toggle-thumbnails" title="Page thumbnails (Ctrl+T)">&#9636;</button>
       <button type="button" data-command="add-bookmark" title="Add bookmark (Ctrl+B)">&#9873;</button>
       <button type="button" data-command="show-bookmarks" title="Bookmarks">&#9776;</button>
@@ -74,6 +98,7 @@
       <span id="book-label"></span>
       <span class="spacer"></span>
       <span id="mode-label"></span>
+      <span id="progress-label"></span>
       <span id="zoom-label"></span>
     </footer>
 
@@ -168,6 +193,38 @@
         <div class="pref-row">
           <label for="pref-guided-spotlight">Panel spotlight</label>
           <input id="pref-guided-spotlight" type="checkbox" />
+        </div>
+        <div class="pref-row">
+          <label for="pref-vertical">Vertical scroll</label>
+          <input id="pref-vertical" type="checkbox" />
+        </div>
+        <div class="pref-row">
+          <label for="pref-brightness">Brightness</label>
+          <input id="pref-brightness" type="range" min="0.5" max="2" step="0.02" />
+          <output id="pref-brightness-value"></output>
+        </div>
+        <div class="pref-row">
+          <label for="pref-contrast">Contrast</label>
+          <input id="pref-contrast" type="range" min="0.5" max="2" step="0.02" />
+          <output id="pref-contrast-value"></output>
+        </div>
+        <div class="pref-row">
+          <label for="pref-grayscale">Grayscale</label>
+          <input id="pref-grayscale" type="range" min="0" max="1" step="0.05" />
+          <output id="pref-grayscale-value"></output>
+        </div>
+        <div class="pref-row">
+          <label for="pref-sepia">Sepia</label>
+          <input id="pref-sepia" type="range" min="0" max="1" step="0.05" />
+          <output id="pref-sepia-value"></output>
+        </div>
+        <div class="pref-row">
+          <label for="pref-sharpen">Sharpen scans</label>
+          <input id="pref-sharpen" type="checkbox" />
+        </div>
+        <div class="pref-row">
+          <label for="pref-remember">Remember layout per book</label>
+          <input id="pref-remember" type="checkbox" />
         </div>
       </div>
       <p class="dialog-note">

@@ -179,6 +179,34 @@ try {
     }
   }
 
+  // Vertical scrolling builds a column with one row per page.
+  {
+    const reportFile = join(workspace, "report-vertical.json");
+    const result = await run(
+      ["--smoke", `--report=${reportFile}`, "--command=toggle-vertical", fixture.archive],
+      env,
+    );
+    let report = null;
+    try {
+      report = JSON.parse(await readFile(reportFile, "utf8"));
+    } catch {
+      report = parseReport(result.stdout);
+    }
+    try {
+      if (report === null) {
+        throw new Error(`no report (exit=${result.code})\n${result.stdout}\n${result.stderr}`);
+      }
+      assert.equal(report.smoke, "ok", `app reported ${JSON.stringify(report)}`);
+      assert.equal(report.verticalScroll, true, "vertical scroll is on");
+      assert.equal(report.verticalPages, 4, "a four-page book gets a four-row column");
+      process.stdout.write(
+        `verify-dist: vertical scroll OK — ${report.verticalPages} pages in the column\n`,
+      );
+    } catch (error) {
+      failures.push(`vertical: ${error.message}`);
+    }
+  }
+
   // The capture path exercises the full render pipeline, not just the loader.
   const screenshot = join(workspace, "packaged.png");
   const captured = await run([`--capture=${screenshot}`, fixture.archive], env);

@@ -8,7 +8,7 @@ CDisplayEx 1.10.33 (its release notes, its translation catalog, and its installe
 file inventory on this machine). It shares no code, assets, or branding with
 that product, and it does not read or modify CDisplayEx's files.
 
-## Status: milestone 6 — guided view
+## Status: milestone 7 — reading modes and scan repair
 
 Working today:
 
@@ -16,7 +16,8 @@ Working today:
   (recursive, depth-limited)
 - Page order is natural filename order (`page2` before `page10`)
 - Packaging noise is skipped: `__MACOSX/`, AppleDouble `._*`, `.DS_Store`, `Thumbs.db`
-- **Single page** and **double page** reading; a wide page gets a spread to itself
+- **Single page**, **double page**, and **vertical continuous scroll**; a wide page
+  gets a spread to itself
 - **Right-to-left** (Japanese) reading direction, which also mirrors the click zones
 - **Fit to screen / width / height** and **actual size**, plus zoom in/out with
   anchored zoom-at-cursor and pan clamped to the page
@@ -28,19 +29,54 @@ Working today:
   bitmap; encrypted RAR and 7z archives are reported rather than half-read
 - **Resumes** each book at the page it was left on, remembers a **recent list**,
   and keeps **named bookmarks** per book
+- **Layout is remembered per book**: reading mode, direction, fit and rotation are
+  stored against the book, so a manga volume opens right-to-left whatever the last
+  book was. Turn it off with "Remember layout per book".
 - **Thumbnail strip** with lazy per-page previews that jumps to any page
-- **Colour correction** (off, estimated per page, or manual gamma and colour boost),
-  **scaling quality** (nearest, linear, high quality), and pages **decoded ahead**
+- **Colour correction** (off, estimated per page, or manual gamma and colour boost)
+- **Scan filters**: brightness, contrast, grayscale, sepia and unsharp sharpening,
+  for making a poor scan readable
+- **Scaling quality** (nearest, linear, high quality) and pages **decoded ahead**
   of the reader
 - **Magnifier** lens that follows the pointer, an **automatic slideshow**, and
   **rebindable primary and secondary** keyboard shortcuts
 - **Guided view**: panels are detected automatically and the page keys step
   through them one at a time, with an optional spotlight on the focused panel
+- **Progress percentage** in the status bar, and a progress report while a large
+  archive is being opened
 
 Not implemented, each for a stated reason: CBT/TAR archives and DjVu (format work
 not yet done), a true Lanczos kernel and perceptual vibrance (the settings say what
 they actually do instead), "Fit Landscape"/"Fit Portrait" (semantics never
 observed), and portable configuration.
+
+## Reading a long comic
+
+`V` (or the **Scroll** button) reads the book as one continuous column instead of
+page by page: pages are laid out full width, loaded as they come into view, and the
+status bar follows the page under the middle of the screen, so resume, bookmarks and
+the thumbnail strip keep working. Zoom in and out with `+`/`-` widens or narrows the
+column rather than scaling a page.
+
+PDFs are drawn only for the two pages either side of the reader, so a long PDF does
+not render every page up front.
+
+Vertical scroll and guided view are mutually exclusive — they are two ways to read
+the same page — so switching one on switches the other off.
+
+## Scan filters
+
+Brightness, contrast, grayscale, sepia and sharpening are separate from colour
+correction: colour correction neutralises a cast, scan filters make a bad scan
+readable. They are all one SVG filter chain, so a page is filtered as it is painted
+rather than copied through a canvas.
+
+Brightness and contrast share one linear stage — `value * (brightness * contrast) +
+0.5 * (1 - contrast)` — the gamma stage carries the white-balance gains, and sepia is
+a single matrix blended between identity and the classic sepia matrix, so a partial
+sepia is one node rather than two passes. Sharpening is a 3x3 unsharp kernel whose
+weights sum to one, which is asserted by a test: it changes edge contrast without
+changing overall luminance.
 
 ## Guided view
 
@@ -196,6 +232,7 @@ accelerator are not rebindable.
 | `M` | Toggle the magnifier |
 | `S` | Start or stop the slideshow |
 | `G` | Toggle guided view |
+| `V` | Toggle vertical scroll |
 | `Ctrl`+wheel | Zoom at cursor |
 | Wheel | Scroll the page, then turn the page at the edge |
 | `Ctrl`+`O` / `Ctrl`+`Shift`+`O` | Open comic / folder |
@@ -296,7 +333,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 141 unit, store, colour, magnifier, panel, shortcut and reader tests
+npm test        # 157 unit, store, colour, magnifier, panel, shortcut and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
@@ -339,6 +376,7 @@ says what it does not know:
 | CBT/TAR, DjVu | **Not implemented**; CDisplayEx supports both |
 | Guided view with automatic panel detection | **Not from CDisplayEx**, which has no guided view. Independently implemented from the well-known gutter-splitting technique; no code taken from any other project. |
 | Detection is heuristic and tuned for panel grids | **Chosen**; covers and splash pages are shown whole or split oddly, and that is stated rather than hidden |
+| Vertical scroll, scan filters, progress, per-book layout | **Not from CDisplayEx**; brought in as *ideas* only, implemented independently. The source that suggested them carries no licence, so no code was taken from it. |
 | Books keyed by absolute path rather than by content digest | **Chosen** limitation; a moved or renamed book is treated as new |
 | Automatic colour correction, gamma, colour boost, scaling quality, page cache | **Observed** options in CDisplayEx's catalog ("Automatic color correction", "Gamma", "Vibrance", "Lanczos (better quality)", "Linear", "Nearest (faster)", "Cache pages") |
 | Colour boost implemented as a saturation matrix | **Chosen approximation**; a linear colour matrix cannot express perceptual vibrance |

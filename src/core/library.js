@@ -46,6 +46,22 @@ export const DEFAULT_PREFERENCES = {
   guidedEasing: "ease-out",
   /** Dim everything outside the focused panel. */
   guidedSpotlight: true,
+  /** Read as one continuous vertical column instead of page by page. */
+  verticalScroll: false,
+  /** Brightness multiplier for the scan-enhancement stage. */
+  brightness: 1,
+  /** Contrast multiplier for the scan-enhancement stage. */
+  contrast: 1,
+  /** How much colour to remove, 0 to 1. */
+  grayscale: 0,
+  /** How much sepia to apply, 0 to 1. */
+  sepia: 0,
+  /** Sharpen scanned pages. */
+  sharpen: false,
+  /** Sharpen strength, 0 to 1. */
+  sharpenAmount: 0.35,
+  /** Remember reading mode and layout per book. */
+  rememberPerBook: true,
 };
 
 /**
@@ -74,6 +90,27 @@ export const PREFERENCE_RULES = {
   guidedPanMs: { type: "number", min: 0, max: 1500, integer: true },
   guidedEasing: { type: "enum", values: ["linear", "ease-in", "ease-out", "ease-in-out"] },
   guidedSpotlight: { type: "boolean" },
+  verticalScroll: { type: "boolean" },
+  brightness: { type: "number", min: 0.5, max: 2 },
+  contrast: { type: "number", min: 0.5, max: 2 },
+  grayscale: { type: "number", min: 0, max: 1 },
+  sepia: { type: "number", min: 0, max: 1 },
+  sharpen: { type: "boolean" },
+  sharpenAmount: { type: "number", min: 0, max: 1 },
+  rememberPerBook: { type: "boolean" },
+};
+
+/**
+ * Coerce one value against a rule, or return undefined when it is unusable.
+ * Numbers are clamped to their range and enums must be a known value.
+ */
+const coerceWithRule = (rule, value) => {
+  if (rule === undefined) return undefined;
+  if (rule.type === "boolean") return typeof value === "boolean" ? value : undefined;
+  if (rule.type === "enum") return rule.values.includes(value) ? value : undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const clamped = Math.min(rule.max, Math.max(rule.min, value));
+  return rule.integer === true ? Math.round(clamped) : clamped;
 };
 
 /**
@@ -81,14 +118,36 @@ export const PREFERENCE_RULES = {
  * Numbers are clamped to their range and enums must be a known value, so a
  * hand-edited library file cannot put the reader into an invalid state.
  */
-export const coercePreference = (key, value) => {
-  const rule = PREFERENCE_RULES[key];
-  if (rule === undefined) return undefined;
-  if (rule.type === "boolean") return typeof value === "boolean" ? value : undefined;
-  if (rule.type === "enum") return rule.values.includes(value) ? value : undefined;
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  const clamped = Math.min(rule.max, Math.max(rule.min, value));
-  return rule.integer === true ? Math.round(clamped) : clamped;
+export const coercePreference = (key, value) => coerceWithRule(PREFERENCE_RULES[key], value);
+
+/**
+ * Layout the reader remembers *per book* rather than globally: a manga volume
+ * should open right-to-left whatever the last book was.
+ */
+export const BOOK_SETTING_RULES = {
+  doublePage: { type: "boolean" },
+  rightToLeft: { type: "boolean" },
+  guidedView: { type: "boolean" },
+  verticalScroll: { type: "boolean" },
+  fitMode: { type: "enum", values: ["screen", "width", "height", "original", "manual"] },
+  rotation: { type: "number", min: 0, max: 359, integer: true },
+};
+
+/** Layout for one book, keeping only the fields that are usable. */
+export const normalizeBookSettings = (value) => {
+  const settings = {};
+  if (value === null || typeof value !== "object") return settings;
+  for (const [key, rule] of Object.entries(BOOK_SETTING_RULES)) {
+    const coerced = coerceWithRule(rule, value[key]);
+    if (coerced !== undefined) settings[key] = coerced;
+  }
+  return settings;
+};
+
+/** Per-book layout for books no longer remembered is dropped with them. */
+export const pruneBookSettings = (bookSettings, history) => {
+  const known = new Set(history.map((item) => item.pathKey));
+  return Object.fromEntries(Object.entries(bookSettings).filter(([pathKey]) => known.has(pathKey)));
 };
 
 /** Defaults with every usable value from `value` layered on top. */

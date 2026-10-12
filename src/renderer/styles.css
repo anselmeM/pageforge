@@ -144,6 +144,64 @@ body {
   font-size: 12px;
 }
 
+/* Opening progress --------------------------------------------------------- */
+
+#opening {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgb(18 18 24 / 92%);
+  color: var(--text);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+#opening[hidden] {
+  display: none;
+}
+
+#opening progress {
+  width: 160px;
+  height: 6px;
+  accent-color: var(--accent);
+}
+
+/* Vertical scrolling ------------------------------------------------------- */
+
+#scroll {
+  position: relative;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+#scroll[hidden] {
+  display: none;
+}
+
+.scroll-page {
+  display: block;
+  flex: none;
+  background: #101014;
+}
+
+.scroll-page img,
+.scroll-page canvas {
+  display: block;
+}
+
 /* Guided view spotlight ---------------------------------------------------- */
 
 /* An oversized shadow dims everything except the focused panel, so no mask has

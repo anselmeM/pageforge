@@ -5,9 +5,13 @@ import { describe, it } from "node:test";
 
 import {
   IDENTITY_GAINS,
+  IDENTITY_MATRIX,
   averageChannelMeans,
   colorFilterParameters,
   computeWhiteBalanceGains,
+  scanFilterParameters,
+  sepiaMatrix,
+  sharpenKernel,
 } from "../src/core/color.js";
 import {
   DEFAULT_PREFERENCES,
@@ -101,8 +105,86 @@ describe("colour filter parameters", () => {
   });
 });
 
-describe("preference validation", () => {
-  it("has a rule for every default", () => {
+describe("scan enhancement", () => {
+  it("is inactive at neutral settings", () => {
+    const parameters = scanFilterParameters({});
+    assert.equal(parameters.active, false);
+    assert.equal(parameters.slope, 1);
+    assert.equal(parameters.intercept, 0);
+    assert.equal(parameters.saturation, 1);
+    assert.equal(parameters.sepia, 0);
+    assert.equal(parameters.sharpen, false);
+  });
+
+  it("folds brightness and contrast into one linear stage", () => {
+    const parameters = scanFilterParameters({ brightness: 1.2, contrast: 1.5 });
+    assert.ok(Math.abs(parameters.slope - 1.8) < 1e-12, `slope was ${parameters.slope}`);
+    assert.equal(parameters.intercept, 0.5 * (1 - 1.5));
+  });
+
+  it("turns grayscale into a saturation reduction", () => {
+    assert.equal(scanFilterParameters({ grayscale: 1 }).saturation, 0);
+    assert.equal(scanFilterParameters({ grayscale: 0.25 }).saturation, 0.75);
+  });
+
+  it("clamps out-of-range values", () => {
+    const parameters = scanFilterParameters({ brightness: 99, contrast: -5, grayscale: 9, sepia: -2 });
+    assert.equal(parameters.slope, 2 * 0.5);
+    assert.equal(parameters.saturation, 0);
+    assert.equal(parameters.sepia, 0);
+  });
+
+  it("reports activity for any single non-neutral control", () => {
+    assert.equal(scanFilterParameters({ brightness: 1.1 }).active, true);
+    assert.equal(scanFilterParameters({ sepia: 0.1 }).active, true);
+    assert.equal(scanFilterParameters({ sharpen: true }).active, true);
+  });
+});
+
+describe("sepia blend", () => {
+  it("is the identity at zero strength", () => {
+    assert.deepEqual(sepiaMatrix(0), IDENTITY_MATRIX);
+  });
+
+  it("is the classic matrix at full strength", () => {
+    const full = sepiaMatrix(1);
+    assert.ok(Math.abs(full[0] - 0.393) < 1e-9);
+    assert.ok(Math.abs(full[6] - 0.686) < 1e-9);
+    assert.equal(full[18], 1, "alpha is untouched");
+  });
+
+  it("blends linearly between the two", () => {
+    const half = sepiaMatrix(0.5);
+    assert.ok(Math.abs(half[0] - (1 + (0.393 - 1) * 0.5)) < 1e-9);
+    assert.equal(half.length, 20, "a 4x5 matrix, as feColorMatrix expects");
+  });
+});
+
+describe("sharpen kernel", () => {
+  it("is the identity kernel at zero strength", () => {
+    assert.deepEqual(sharpenKernel(0), [0, 0, 0, 0, 1, 0, 0, 0, 0]);
+  });
+
+  it("preserves total luminance at any strength", () => {
+    for (const amount of [0.2, 0.5, 1]) {
+      const kernel = sharpenKernel(amount);
+      const total = kernel.reduce((sum, value) => sum + value, 0);
+      assert.ok(Math.abs(total - 1) < 1e-9, `kernel sums to ${total} at ${amount}`);
+    }
+  });
+
+  it("puts the neighbour weight on the four orthogonal cells only", () => {
+    const kernel = sharpenKernel(0.4);
+    assert.equal(kernel[0], 0);
+    assert.equal(kernel[2], 0);
+    assert.equal(kernel[6], 0);
+    assert.equal(kernel[8], 0);
+    assert.equal(kernel[1], -0.4);
+    assert.ok(Math.abs(kernel[4] - 2.6) < 1e-9);
+  });
+});
+
+describe("preference validation", () => {  it("has a rule for every default", () => {
     for (const key of Object.keys(DEFAULT_PREFERENCES)) {
       assert.ok(PREFERENCE_RULES[key] !== undefined, `missing rule for ${key}`);
     }

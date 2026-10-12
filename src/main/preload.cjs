@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld("pageforge", {
   removeBookmark: (id) => ipcRenderer.invoke("library:bookmark:remove", id),
   /** Forget every recent book and its bookmarks. */
   clearHistory: () => ipcRenderer.invoke("library:history:clear"),
+  /** Remember layout for a book (reading mode, direction, fit, rotation). */
+  setBookSettings: (targetPath, settings) =>
+    ipcRenderer.invoke("library:book-settings:set", targetPath, settings),
   /** Change a preference; the main process echoes the result back. */
   setPreference: (key, value) => ipcRenderer.invoke("library:preference:set", key, value),
   /** Open a recent book by path. Returns { ok, book } or { ok: false, error }. */
@@ -56,7 +59,7 @@ contextBridge.exposeInMainWorld("pageforge", {
   },
   /** Subscribe to a main-process push. Returns an unsubscribe function. */
   on: (channel, handler) => {
-    const allowed = ["app:book-opened", "app:book-failed", "app:fullscreen", "app:preferences"];
+    const allowed = ["app:book-opened", "app:book-failed", "app:fullscreen", "app:preferences", "app:open-progress"];
     if (!allowed.includes(channel)) throw new Error(`Unsupported channel: ${channel}`);
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on(channel, listener);
