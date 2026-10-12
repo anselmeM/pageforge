@@ -17,6 +17,9 @@ app with a portable executable as the deliverable.
    convenience, not the enforcement; it exists only in clones that have run that.
    Protection exists because the repository is **public**; a private free-plan
    repository cannot have it, and GitHub returns 403 for both protection and rulesets.
+   The hook also **runs the test suite** and refuses a push that fails it, which is
+   the half that does not depend on the server. `PAGEFORGE_SKIP_TESTS=1` skips the
+   tests only — never the refusal of a direct push to the default branch.
 6. **This repository is public.** Everything committed is published, including the
    history and every commit body. Do not commit a licensed work — that is why eight
    screenshots of a real comic were removed. Screenshots must be taken from generated
@@ -35,7 +38,7 @@ app with a portable executable as the deliverable.
 
 | Command | What it does |
 |---|---|
-| `npm test` | 321 unit tests. No Electron, no window — fast, and never flaky. |
+| `npm test` | Unit tests. No Electron, no window — fast, and never flaky. |
 | `npm run smoke` | Launches the real app against generated fixtures, every format. |
 | `npm run verify` | `test` + `verify:workflows` + `smoke` + `verify:crash`. |
 | `npm run dist` | Builds the portable executable. **The app must be closed first** — the exe is locked while it runs, and `scripts/ensure-not-running.mjs` fails fast with that reason. |

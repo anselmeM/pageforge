@@ -36,21 +36,52 @@ If something was verified by hand rather than by CI, say so.
 
 ## The pre-push hook
 
-A hook blocks direct pushes to `master`. Enable it once per clone:
+The hook does two things. Enable it once per clone:
 
 ```sh
 npm run setup:hooks      # git config core.hooksPath .githooks
 ```
 
+1. **It refuses a direct push to `master`**, so every change goes through a PR.
+2. **It runs the test suite and refuses a push that fails it.** Six seconds, against
+   about six minutes for the same run in CI.
+
+The second job is the one that does not depend on the server. Branch protection is a
+paid feature for a private repository, so if this repository is ever made private
+again, the hook is what stands between `master` and a broken tree.
+
 It is a **convenience, not the enforcement.** It lives in the working copy, so a
 fresh clone has no hook until it runs that command, and `git push --no-verify` steps
-around it. Taking that step fails anyway:
+around it. Skipping it for the default branch fails anyway:
 
 ```
 remote: error: GH006: Protected branch update failed for refs/heads/master.
 remote: - Changes must be made through a pull request.
 remote: - 3 of 3 required status checks are expected.
 ```
+
+To push a deliberate work in progress without the gate:
+
+```sh
+PAGEFORGE_SKIP_TESTS=1 git push
+```
+
+That skips the tests only. It does **not** allow a push to `master`, because the
+point of the second job is the first job's job.
+
+Two ways of writing this hook made it fail *open* — allowing the push it exists to
+refuse, while looking like it worked. Both are guarded by tests now:
+
+- reading stdin through `cat`, which a minimal shell may not have. The ref list came
+  back empty, nothing matched, and the push went through. The check now uses shell
+  built-ins only.
+- `IFS= read -r a b c d`, which disables field splitting, so the whole line landed in
+  the first variable and the branch name was never seen.
+
+A hook that fails open is worse than no hook, because it is trusted.
+
+The gate tests the **working tree**, not the commits being pushed. That is what you
+want while working, and worth knowing if the two ever differ.
 
 ## Branch protection
 
@@ -93,7 +124,7 @@ credential verification are **not** covered. Do not assume they are.
 
 | Command | Runs |
 |---|---|
-| `npm test` | 321 unit tests. Pure logic, no Electron, no browser. |
+| `npm test` | Unit tests. Pure logic, no Electron, no browser. |
 | `npm run smoke` | The real app against generated fixtures, every format. |
 | `npm run verify` | Tests, workflow parsing, smoke, crash reporting. |
 | `npm run verify:dist` | The *packaged* executable, after `npm run dist`. |
