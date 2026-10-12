@@ -15,7 +15,10 @@ import { join } from "node:path";
 import {
   DEFAULT_PREFERENCES,
   bookmarksFor,
+  buildLibraryExport,
   coercePreference,
+  groupHistoryBySeries,
+  mergeLibraryImport,
   normalizeBookSettings,
   normalizePreferences,
   normalizePathKey,
@@ -157,7 +160,7 @@ export const createStore = async ({ directory }) => {
     },
 
     /** Remember an opened book without losing where the reader had got to. */
-    async recordOpen({ targetPath, displayName, kind, pages = 0 }) {
+    async recordOpen({ targetPath, displayName, kind, pages = 0, series = null, number = null }) {
       const pathKey = normalizePathKey(targetPath);
       const previous = entryFor(pathKey);
       const entry = {
@@ -168,6 +171,10 @@ export const createStore = async ({ directory }) => {
         pages,
         lastPage: previous?.lastPage ?? 1,
         openedAt: new Date().toISOString(),
+        // What the book says about itself, which is what lets the recent list
+        // group a series together.
+        series: series ?? previous?.series ?? null,
+        number: number ?? previous?.number ?? null,
       };
       library.history = upsertHistory(library.history, entry);
       library.bookmarks = pruneBookmarks(library.bookmarks, library.history);
@@ -245,6 +252,42 @@ export const createStore = async ({ directory }) => {
       library.achievements = normalizeAchievementState(null);
       await persist();
       return true;
+    },
+
+    /** Everything worth keeping, in the shape Export writes. */
+    exportLibrary({ appVersion = null } = {}) {
+      return buildLibraryExport(
+        {
+          history: library.history,
+          bookmarks: library.bookmarks,
+          bookSettings: library.bookSettings,
+          achievements: library.achievements,
+          preferences: library.preferences,
+        },
+        { at: new Date().toISOString(), appVersion },
+      );
+    },
+
+    /**
+     * Merge an imported document into this library.
+     *
+     * The rules live in `core/library.js` so they can be tested directly; this
+     * only swaps the values in and writes once.
+     */
+    async importLibrary(document) {
+      const result = mergeLibraryImport(library, document);
+      if (result.unrecognised) return { ok: false, unrecognised: true };
+      library.history = result.library.history;
+      library.bookmarks = result.library.bookmarks;
+      library.bookSettings = result.library.bookSettings;
+      library.achievements = result.library.achievements;
+      await persist();
+      return { ok: true, report: result.report };
+    },
+
+    /** Books grouped by the series their metadata declared. */
+    historyBySeries() {
+      return groupHistoryBySeries(library.history);
     },
 
     async addBookmark(targetPath, page, name) {

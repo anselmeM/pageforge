@@ -21,6 +21,12 @@ contextBridge.exposeInMainWorld("pageforge", {
   getAchievements: () => ipcRenderer.invoke("achievements:get"),
   /** Start the achievements over, leaving reading history alone. */
   resetAchievements: () => ipcRenderer.invoke("achievements:reset"),
+  /** Write positions, bookmarks and achievements to a file the reader chooses. */
+  exportLibrary: () => ipcRenderer.invoke("library:export"),
+  /** Merge a previously exported file into this library. */
+  importLibrary: () => ipcRenderer.invoke("library:import"),
+  /** Recent books grouped by the series their metadata declared. */
+  groupedHistory: () => ipcRenderer.invoke("library:grouped"),
   /** Add a named bookmark for a page. */
   addBookmark: (targetPath, page, name) => ipcRenderer.invoke("library:bookmark:add", targetPath, page, name),
   /** Remove a bookmark by id. */

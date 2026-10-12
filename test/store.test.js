@@ -170,3 +170,72 @@ describe("store", () => {
     assert.equal(Object.values(written.bookmarks)[0].length, 3, "no write is lost");
   });
 });
+
+describe("library export and import through the store", () => {
+  it("carries positions, bookmarks and achievements between libraries", async () => {
+    const sourceDirectory = await mkdtemp(join(tmpdir(), "pageforge-export-src-"));
+    const targetDirectory = await mkdtemp(join(tmpdir(), "pageforge-export-dst-"));
+    try {
+      const source = await createStore({ directory: sourceDirectory });
+      await source.recordOpen({
+        targetPath: "C:/comics/saga-01.cbz",
+        displayName: "saga-01.cbz",
+        kind: "archive",
+        pages: 120,
+        series: "Saga",
+        number: "1",
+      });
+      await source.recordProgress("C:/comics/saga-01.cbz", 40);
+      await source.addBookmark("C:/comics/saga-01.cbz", 12, "Chapter 2");
+      await source.recordReading({ targetPath: "C:/comics/saga-01.cbz", page: 120, total: 120 });
+      await source.flush();
+      const document = source.exportLibrary({ appVersion: "0.1.0" });
+
+      const target = await createStore({ directory: targetDirectory });
+      assert.equal((await target.importLibrary(document)).ok, true);
+      const entry = target.history().find((item) => item.pathKey.includes("saga-01"));
+      assert.equal(entry.lastPage, 120, "the position came across");
+      assert.equal(entry.series, "Saga", "and so did the series, so the list can group it");
+      assert.equal(target.bookmarks("C:/comics/saga-01.cbz").length, 1);
+      assert.equal(target.achievementSummary().measures.booksFinished, 1);
+    } finally {
+      await rm(sourceDirectory, { recursive: true, force: true }).catch(() => {});
+      await rm(targetDirectory, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("refuses a file that is not a PageForge library", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pageforge-import-bad-"));
+    try {
+      const store = await createStore({ directory });
+      const result = await store.importLibrary({ hello: "world" });
+      assert.equal(result.ok, false);
+      assert.equal(result.unrecognised, true);
+      assert.deepEqual(store.history(), [], "nothing was applied");
+    } finally {
+      await rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("groups the remembered books by series", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pageforge-grouped-"));
+    try {
+      const store = await createStore({ directory });
+      await store.recordOpen({ targetPath: "C:/a.cbz", displayName: "a", kind: "archive", series: "Saga", number: "2" });
+      await store.recordOpen({ targetPath: "C:/b.cbz", displayName: "b", kind: "archive", series: "Saga", number: "1" });
+      await store.recordOpen({ targetPath: "C:/c.cbz", displayName: "c", kind: "archive" });
+      await store.flush();
+      const grouped = store.historyBySeries();
+      assert.equal(grouped.groups.length, 1);
+      assert.equal(grouped.groups[0].name, "Saga");
+      assert.deepEqual(
+        grouped.groups[0].entries.map((entry) => entry.displayName),
+        ["b", "a"],
+        "issue 1 comes before issue 2",
+      );
+      assert.equal(grouped.loose.length, 1);
+    } finally {
+      await rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});

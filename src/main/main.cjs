@@ -295,6 +295,8 @@ const loadTarget = async (targetPath) => {
       displayName: book.displayName,
       kind: book.kind,
       pages: 0,
+      series: book.comicInfo?.series ?? null,
+      number: book.comicInfo?.number ?? null,
     });
     // A PDF's page count is only known once the viewer has parsed it, so the
     // recorded page is passed through unclamped and the viewer clamps it.
@@ -328,6 +330,8 @@ const loadTarget = async (targetPath) => {
     displayName: book.displayName,
     kind: book.kind,
     pages: book.pages.length,
+    series: book.comicInfo?.series ?? null,
+    number: book.comicInfo?.number ?? null,
   });
   return {
     ...book,
@@ -741,6 +745,49 @@ const registerIpc = () => {
   ipcMain.handle("achievements:reset", async () => {
     const store = await ensureLibrary();
     return store.resetAchievements();
+  });
+  ipcMain.handle("library:export", async () => {
+    const store = await ensureLibrary();
+    const document = store.exportLibrary({ appVersion: app.getVersion() });
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "Export library",
+      defaultPath: "pageforge-library.json",
+      filters: [{ name: "PageForge library", extensions: ["json"] }],
+    });
+    if (result.canceled || result.filePath === undefined) return { ok: false, canceled: true };
+    try {
+      await writeFile(result.filePath, JSON.stringify(document, null, 2), "utf8");
+    } catch (error) {
+      return { ok: false, error: `Could not write ${result.filePath}: ${error.message}` };
+    }
+    return {
+      ok: true,
+      path: result.filePath,
+      counts: { books: document.history.length, bookmarks: Object.keys(document.bookmarks ?? {}).length },
+    };
+  });
+  ipcMain.handle("library:import", async () => {
+    const chosen = await dialog.showOpenDialog(mainWindow, {
+      title: "Import library",
+      properties: ["openFile"],
+      filters: [{ name: "PageForge library", extensions: ["json"] }],
+    });
+    if (chosen.canceled || chosen.filePaths.length === 0) return { ok: false, canceled: true };
+    let parsed = null;
+    try {
+      parsed = JSON.parse(await readFile(chosen.filePaths[0], "utf8"));
+    } catch (error) {
+      return { ok: false, error: `That file could not be read: ${error.message}` };
+    }
+    const store = await ensureLibrary();
+    const merged = await store.importLibrary(parsed);
+    // A file that is not ours is reported as such rather than half-applied.
+    if (merged.ok !== true) return { ok: false, error: "That is not a PageForge library file." };
+    return { ok: true, path: chosen.filePaths[0], report: merged.report };
+  });
+  ipcMain.handle("library:grouped", async () => {
+    const store = await ensureLibrary();
+    return store.historyBySeries();
   });
   ipcMain.handle("library:bookmark:add", async (_event, targetPath, page, name) => {
     const store = await ensureLibrary();

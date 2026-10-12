@@ -1012,34 +1012,87 @@ const openBookmarksDialog = async () => {
   bookmarkName.focus();
 };
 
-const renderRecentList = () => {
+/** One clickable row for a remembered book. */
+const buildHistoryRow = (entry) => {
+  const item = document.createElement("li");
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "jump";
+  open.textContent = entry.displayName;
+  open.title = entry.path;
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = ` — ${describeHistoryEntry(entry)}, last page ${entry.lastPage ?? 1}`;
+  open.append(meta);
+  open.addEventListener("click", async () => {
+    recentDialog.close();
+    const result = await api.openRecent(entry.path);
+    if (result.ok) await applyBook(result.book);
+    else toast(result.error.message);
+  });
+  item.append(open);
+  return item;
+};
+
+/**
+ * The recent list, grouped by series when the books declared one.
+ *
+ * Books that carry no metadata stay in a plain list underneath rather than being
+ * gathered under a heading the app invented.
+ */
+const renderRecentList = (grouped = null) => {
   recentList.replaceChildren();
-  document.getElementById("recent-empty").hidden = state.history.length > 0;
-  for (const entry of state.history) {
-    const item = document.createElement("li");
-    const open = document.createElement("button");
-    open.type = "button";
-    open.className = "jump";
-    open.textContent = entry.displayName;
-    open.title = entry.path;
-    const meta = document.createElement("span");
-    meta.className = "meta";
-    meta.textContent = ` — ${describeHistoryEntry(entry)}, last page ${entry.lastPage ?? 1}`;
-    open.append(meta);
-    open.addEventListener("click", async () => {
-      recentDialog.close();
-      const result = await api.openRecent(entry.path);
-      if (result.ok) await applyBook(result.book);
-      else toast(result.error.message);
-    });
-    item.append(open);
-    recentList.append(item);
+  const total = state.history.length;
+  document.getElementById("recent-empty").hidden = total > 0;
+  if (total === 0) return;
+
+  const loose = grouped === null ? state.history : grouped.loose;
+  for (const group of grouped?.groups ?? []) {
+    const heading = document.createElement("li");
+    heading.className = "recent-group";
+    heading.textContent = `${group.name} — ${group.entries.length} book${group.entries.length === 1 ? "" : "s"}`;
+    recentList.append(heading);
+    for (const entry of group.entries) recentList.append(buildHistoryRow(entry));
   }
+  if (grouped !== null && grouped.groups.length > 0 && loose.length > 0) {
+    const heading = document.createElement("li");
+    heading.className = "recent-group";
+    heading.textContent = "Other books";
+    recentList.append(heading);
+  }
+  for (const entry of loose) recentList.append(buildHistoryRow(entry));
+};
+
+const exportLibrary = async () => {
+  const result = await api.exportLibrary();
+  if (result.canceled) return;
+  if (!result.ok) {
+    toast(result.error ?? "The library could not be exported");
+    return;
+  }
+  toast(`Exported ${result.counts.books} books to ${result.path}`);
+};
+
+const importLibrary = async () => {
+  const result = await api.importLibrary();
+  if (result.canceled) return;
+  if (!result.ok) {
+    toast(result.error ?? "The library could not be imported");
+    return;
+  }
+  await refreshLibrary();
+  renderRecentList(await api.groupedHistory().catch(() => null));
+  const { historyAdded, historyUpdated, bookmarksAdded, booksFinishedAdded } = result.report;
+  toast(
+    `Imported: ${historyAdded} new book${historyAdded === 1 ? "" : "s"}, ` +
+      `${historyUpdated} updated, ${bookmarksAdded} bookmark${bookmarksAdded === 1 ? "" : "s"}, ` +
+      `${booksFinishedAdded} finished`,
+  );
 };
 
 const openRecentDialog = async () => {
   await refreshLibrary();
-  renderRecentList();
+  renderRecentList(await api.groupedHistory().catch(() => null));
   recentDialog.showModal();
 };
 
@@ -2427,6 +2480,8 @@ const wireDialogs = () => {
   });
   document.getElementById("bookmarks-close").addEventListener("click", () => bookmarksDialog.close());
   document.getElementById("recent-close").addEventListener("click", () => recentDialog.close());
+  document.getElementById("recent-export").addEventListener("click", () => void exportLibrary());
+  document.getElementById("recent-import").addEventListener("click", () => void importLibrary());
   document.getElementById("achievements-close").addEventListener("click", () => achievementsDialog.close());
   document.getElementById("achievements-reset").addEventListener("click", async () => {
     await api.resetAchievements();

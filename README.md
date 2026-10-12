@@ -59,6 +59,11 @@ Working today:
 - **Achievements**, derived from your own reading on this machine: pages turned,
   books finished, days in a row, reading in the small hours. Unlocks are announced
   as they happen, and the list shows real progress towards the ones not yet earned.
+- **Export and import the library** (positions, bookmarks, per-book layout and
+  achievements) as a JSON file — the way to move to another machine or keep a
+  backup, since there is deliberately no cloud.
+- **Recent books grouped by series**, using the series and issue number a book's
+  ComicInfo declared. Books that declare nothing stay in a plain list underneath.
 
 Not implemented, each for a stated reason: CBT/TAR archives and DjVu (format work
 not yet done), a true Lanczos kernel and perceptual vibrance (the settings say what
@@ -161,6 +166,27 @@ real app against a local server and asserts the URL, the auth header, the event
 body, and the absence of the account name — but a local server implementing the
 documented contract is *not* Sentry's own service. Verifying against Sentry needs a
 DSN and an account, which is exactly what the test button exists for.
+
+## Moving a library between machines
+
+Recent Books has **Export…** and **Import…**. The file holds reading positions,
+bookmarks, per-book layout and achievements — everything that makes a library yours.
+There is no cloud by design, so this is how it travels.
+
+Merging is deliberately conservative, because an import should never lose work:
+
+- **The position from whichever copy was read most recently wins**, so importing an
+  older file cannot move a bookmark backwards.
+- **Bookmarks are unioned**, and one already present at the same page and name is
+  not duplicated.
+- **Per-book layout in use here wins**; the file only fills books that have none.
+- **Achievement counters take the larger value**, and an achievement keeps the
+  earliest date it was earned — importing can never reduce what you have earned.
+- **Reading preferences are carried for reference but not applied.** Silently
+  changing how someone's reader behaves is not what "import my books" means.
+- A file that is not a PageForge library is **refused rather than half-applied**,
+  and a hand-edited file cannot inject anything: every value is normalised on the
+  way in, and the tests include a deliberately hostile one.
 
 ## The thumbnail strip
 
@@ -509,7 +535,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 246 unit, store, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement and reader tests
+npm test        # 261 unit, store, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
