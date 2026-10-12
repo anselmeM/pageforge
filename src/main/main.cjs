@@ -16,7 +16,7 @@ const { appendFileSync } = require("node:fs");
 const { readFile, stat, writeFile } = require("node:fs/promises");
 const { basename, extname, isAbsolute, join, relative, resolve } = require("node:path");
 
-const { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, protocol } = require("electron");
 
 // When ELECTRON_RUN_AS_NODE is inherited, electron.exe runs as plain Node: the
 // electron module resolves to the npm shim and every member below is undefined.
@@ -545,7 +545,10 @@ const createWindow = async () => {
       preload: join(here, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // The viewer is a page reader; it needs nothing from the operating system
+      // beyond the preload's bridge, so it runs sandboxed. The preload only
+      // requires `electron`, which is all a sandboxed preload can have.
+      sandbox: true,
     },
   });
 
@@ -691,9 +694,8 @@ const registerIpc = () => {
     "window:is-fullscreen",
     () => mainWindow !== null && !mainWindow.isDestroyed() && mainWindow.isFullScreen(),
   );
-  ipcMain.handle("shell:open-external", (_event, url) => shell.openExternal(url));
-  // The viewer applies this itself, before it reports readiness, so an
-  // automated run measures the state after the command rather than before it.
+  // The viewer applies this itself, before it reports readiness, so an automated
+  // run measures the state after the command rather than before it.
   ipcMain.handle("app:startup-command", () => startupCommands);
 
   ipcMain.handle("library:get", async () => {

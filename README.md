@@ -431,9 +431,38 @@ quietly outlive the session.
 
 ## Requirements
 
-- Node.js 22 or newer (developed on 24)
-- Electron and the decoders are installed as dependencies; no system runtime is
-  required and nothing is installed system-wide
+- **To run a build:** Windows x64. Nothing else — the portable executable is self-contained.
+- **To build or develop:** Node.js 24 or newer, pinned by `.nvmrc` and declared in
+  `engines`. CI reads `.nvmrc` rather than repeating the version, so the two cannot
+  drift. The floor exists because the library and the saved page index both use
+  Node's built-in `node:sqlite`.
+- **Optional:** WinRAR installed, only so the test suite can *write* CBR fixtures.
+  Reading CBR needs nothing extra. Without it, CBR test cases skip with a printed
+  reason rather than passing silently.
+
+## Licence
+
+[MIT](LICENSE). The dependency list is short and every entry is permissively
+licensed: `yauzl` (ZIP), `node-unrar-js` (RAR), `7z-wasm` (7z) and `pdfjs-dist`
+(PDF).
+
+## Security posture
+
+- **The viewer runs sandboxed**, with `contextIsolation` on and `nodeIntegration`
+  off. Its preload requires only `electron`, which is all a sandboxed preload can
+  have — there is a test that asserts exactly that, so a future change cannot
+  quietly introduce a Node dependency there.
+- **The renderer has a strict CSP** (`default-src 'none'` with explicit allowances),
+  and page bytes are served from the same origin as the app so canvas readback for
+  white balance cannot be tainted.
+- **There is no way to launch an external program.** An `openExternal` channel
+  existed, unvalidated and with nothing calling it; it has been removed rather than
+  guarded, because an unvalidated opener is an arbitrary-protocol launcher and
+  nothing in the interface needs one. A test fails if it comes back.
+- **The protocol handler refuses path traversal**, resolving each request and
+  rejecting anything outside the app root.
+- **Nothing leaves the machine** except opt-in crash reports, which cannot be sent
+  without a destination.
 
 ## Run
 
@@ -571,7 +600,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 272 unit, store, database, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
+npm test        # 278 unit, store, database, IPC, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
@@ -621,6 +650,8 @@ says what it does not know:
 | Library storage | **SQLite, with the JSON store kept as a fallback.** Two windows silently overwriting each other was a real bug, and one small update beats rewriting the file on every page turn. The JSON reader is kept forever for migration and import. Existing libraries migrate once, after being verified against the source. |
 | Crash reporting transport | **Sentry's documented ingest contract over `fetch`**, not the Sentry SDK. Reporting is opt-in and may never be used, so it does not justify a permanent dependency; the cost is no breadcrumbs, sessions or source maps. |
 | Crash reporting default | **Off**, and it cannot send without a destination. An app that phones home by default would make the "local, offline" promise false. |
+| Renderer sandbox | **On**, and verified on the packaged build rather than assumed. The preload needs only `electron`, so the viewer gets no Node access at all. |
+| Opening external links | **Removed, not guarded.** There was an unvalidated `openExternal` channel with no caller; nothing in the interface needs one, so the capability is gone. |
 | Achievements | **Local only, and honest.** Derived from what you read here, never uploaded, counted once per finished book, with day arithmetic that survives daylight saving. Included because they were asked for; they are not forced on a reader who ignores them. |
 | Books keyed by absolute path rather than by content digest | **Chosen** limitation; a moved or renamed book is treated as new |
 | Automatic colour correction, gamma, colour boost, scaling quality, page cache | **Observed** options in CDisplayEx's catalog ("Automatic color correction", "Gamma", "Vibrance", "Lanczos (better quality)", "Linear", "Nearest (faster)", "Cache pages") |
