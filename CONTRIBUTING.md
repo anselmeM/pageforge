@@ -42,32 +42,58 @@ A hook blocks direct pushes to `master`. Enable it once per clone:
 npm run setup:hooks      # git config core.hooksPath .githooks
 ```
 
-It is a **guardrail, not a gate.** It lives in the working copy, so a fresh clone
-has no hook until it runs that command, and `git push --no-verify` steps around it.
-If a change genuinely must go straight to `master` — a broken release, a fix to the
-release workflow itself — use `--no-verify` and say why in the commit body.
-
-## Why `master` is not protected on GitHub
-
-Real enforcement is server-side branch protection, and it cannot be enabled here.
-This repository is private on a free GitHub plan, and GitHub refuses both branch
-protection and rulesets:
+It is a **convenience, not the enforcement.** It lives in the working copy, so a
+fresh clone has no hook until it runs that command, and `git push --no-verify` steps
+around it. Taking that step fails anyway:
 
 ```
-{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.",
- "status":403}
+remote: error: GH006: Protected branch update failed for refs/heads/master.
+remote: - Changes must be made through a pull request.
+remote: - 3 of 3 required status checks are expected.
 ```
 
-That is a plan limitation, not a permissions problem. Making the repository public,
-or upgrading to GitHub Pro, would allow requiring a PR and passing checks on
-`master`. Until then the hook plus discipline is what there is. **CI does already
-run on pull requests**, so a red PR is visible before merge — that part is real.
+## Branch protection
+
+`master` is protected, and the rule applies to admins, so it cannot be bypassed by
+being the owner:
+
+| Setting | Value |
+|---|---|
+| Pull request required | yes — 0 approvals, so the author may merge their own |
+| Required checks | `Unit tests`, `Smoke test (Electron)`, `Package and verify the build` |
+| Branch must be up to date | yes |
+| Force pushes | refused |
+| Deletions | refused |
+
+This became possible when the repository was made public: GitHub refuses branch
+protection and rulesets for a private repository on a free plan, returning `403
+Upgrade to GitHub Pro or make this repository public`. If the repository is ever made
+private again, **protection goes with it** and the hook is all that remains.
+
+```sh
+gh api repos/anselmeM/pageforge/branches/master/protection              # read
+gh api -X DELETE repos/anselmeM/pageforge/branches/master/protection    # remove
+```
+
+If a required check is ever renamed, protection has to be updated to match — or no
+pull request can satisfy it and nothing can be merged.
+
+## Secret scanning
+
+Secret scanning and push protection are enabled, along with vulnerability alerts.
+Push protection refuses a push containing a detectable credential, which matters more
+in a public repository than a review does.
+
+`secret_scanning_non_provider_patterns` and `secret_scanning_validity_checks` are
+requested but report as disabled, so generic non-provider patterns and live
+credential verification are **not** covered. Do not assume they are.
+
 
 ## Checks
 
 | Command | Runs |
 |---|---|
-| `npm test` | 315 unit tests. Pure logic, no Electron, no browser. |
+| `npm test` | 322 unit tests. Pure logic, no Electron, no browser. |
 | `npm run smoke` | The real app against generated fixtures, every format. |
 | `npm run verify` | Tests, workflow parsing, smoke, crash reporting. |
 | `npm run verify:dist` | The *packaged* executable, after `npm run dist`. |
