@@ -1,0 +1,139 @@
+# Publish a downloadable build when a version tag is pushed.
+#
+# CI already uploads the executable as a workflow artifact, but those expire and
+# need a signed-in GitHub account to fetch. Without this workflow there is no way
+# for anyone to actually download PageForge.
+#
+# Tags publish. A manual run builds and verifies without publishing anything, which
+# is how this workflow was tested before the first tag was pushed.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
+  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: windows-latest
+    # Creating a release needs write access to the repository contents.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The tag history is needed to list what changed since the last release.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ env.ELECTRON_CACHE }}
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      # The tag and the version inside the build must agree, or the release would be
+      # labelled one thing while the file is named another.
+      - name: Check the tag matches the package version
+        if: ${{ github.event_name == 'push' }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "${{ github.ref_name }}"
+          if ("v$version" -ne $tag) {
+            Write-Error "Tag $tag does not match package.json version v$version"
+            exit 1
+          }
+          Write-Output "tag $tag matches package.json version $version"
+
+      - run: npm test
+
+      - run: npm run smoke
+
+      - name: Build the portable executable
+        run: npm run dist
+
+      # Nothing is published until the packaged build has proved itself.
+      - name: Verify the packaged build
+        run: npm run verify:dist
+
+      - name: Write the release notes
+        shell: pwsh
+        run: |
+          $notes = @(
+            'A local-first desktop comic reader for Windows x64.',
+            '',
+            'It is a single portable executable: nothing to install, no runtime to add.',
+            '',
+            'This build is not code-signed, so Windows SmartScreen will warn on first run.',
+            'Choose "More info" then "Run anyway". The source is in this repository if you',
+            'would rather build it yourself: run "npm ci" then "npm run dist".',
+            '',
+            'Reading positions, bookmarks and achievements live in %APPDATA%\PageForge.',
+            'CBZ, CBR, CB7, PDF and folders of images are supported; the README says what is',
+            'and is not implemented.',
+            '',
+            '### Changes'
+          )
+          if ("${{ github.event_name }}" -eq "push") {
+            $tag = "${{ github.ref_name }}"
+            $previous = git describe --tags --abbrev=0 "$tag^" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $previous) {
+              $range = "$previous..$tag"
+            } else {
+              $range = $tag
+            }
+            # Subject lines are read separately and prefixed here: a quoted
+            # --pretty format is passed differently by Windows PowerShell 5.1 and
+            # PowerShell 7, and this runs under whichever the runner provides.
+            $subjects = git log --pretty=%s $range
+            $notes += ($subjects | ForEach-Object { "- $_" })
+          } else {
+            $notes += '- Manual build; this run publishes nothing.'
+          }
+          $notes | Out-File -Encoding utf8 NOTES.md
+          Get-Content NOTES.md
+
+      - name: Publish the release
+        if: ${{ github.event_name == 'push' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $asset = (Get-ChildItem release -Filter *.exe | Select-Object -First 1).FullName
+          if (-not $asset) { Write-Error "no executable was built"; exit 1 }
+          Write-Output "publishing $asset"
+          gh release create "${{ github.ref_name }}" --title "PageForge ${{ github.ref_name }}" --notes-file NOTES.md $asset
+          gh release view "${{ github.ref_name }}" --json url --jq .url
+
+      - name: Report a manual build
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: pwsh
+        run: |
+          Get-ChildItem release -Filter *.exe | ForEach-Object {
+            Write-Output ("Manual build: {0} ({1:N1} MB) built and verified; nothing published" -f $_.Name, ($_.Length / 1MB))
+          }
+
+      - name: Keep the executable as an artifact too
+        uses: actions/upload-artifact@v7
+        with:
+          name: PageForge-portable
+          path: release/*.exe
+          if-no-files-found: error

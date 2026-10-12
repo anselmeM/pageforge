@@ -42,6 +42,10 @@ jobs:
       # Pure logic only: no Electron, no window, nothing to be flaky about.
       - run: npm test
 
+      # The PowerShell inside a workflow only runs on a runner, so a syntax error
+      # there costs a whole CI cycle to discover. This parses it locally instead.
+      - run: npm run verify:workflows
+
   verify:
     name: Smoke test (Electron)
     runs-on: windows-latest
