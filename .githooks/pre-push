@@ -1,0 +1,33 @@
+#!/bin/sh
+# Block direct pushes to the default branch, so every change lands through a PR.
+#
+# This is a guardrail, not a gate: it lives in the working copy, so another clone
+# has no hook until it runs `npm run setup:hooks`, and `git push --no-verify` steps
+# around it. Real enforcement is branch protection on the server, which GitHub does
+# not offer for a private repository on a free plan — see CONTRIBUTING.md.
+#
+# Enable with: git config core.hooksPath .githooks   (or npm run setup:hooks)
+
+DEFAULT_BRANCH="master"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = "refs/heads/$DEFAULT_BRANCH" ]; then
+    # Deleting the branch is not the thing this guards against, and neither is a
+    # tag push, which is how releases are published.
+    if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+      exit 0
+    fi
+    echo "ERROR: direct push to '$DEFAULT_BRANCH' is blocked. Use a feature branch and a PR." >&2
+    echo "" >&2
+    echo "  git switch -c <type>/<description>" >&2
+    echo "  git commit -m '<type>: <summary>'" >&2
+    echo "  git push -u origin <type>/<description>" >&2
+    echo "  gh pr create --fill && gh pr checks --watch" >&2
+    echo "  gh pr merge --squash --delete-branch" >&2
+    echo "" >&2
+    echo "If this push genuinely must go straight to $DEFAULT_BRANCH," >&2
+    echo "re-run it with --no-verify and say why in the commit body." >&2
+    exit 1
+  fi
+done
+exit 0

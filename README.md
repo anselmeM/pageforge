@@ -680,6 +680,29 @@ npm run fixture
 node scripts/launch.mjs --capture=out.png --capture-command=double-on fixtures/sample.cbz
 ```
 
+## Contributing
+
+Every change lands through a pull request; `master` is the default branch. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the workflow, and
+[AGENTS.md](AGENTS.md) for the rules given to AI agents working here.
+
+```sh
+npm run setup:hooks      # once per clone: block direct pushes to master
+```
+
+**`master` is not protected on GitHub, and cannot be.** Real enforcement is
+server-side branch protection, which GitHub refuses for a private repository on a
+free plan — both branch protection and rulesets return `403 Upgrade to GitHub Pro
+or make this repository public`. That is a plan limit, not a permissions problem.
+So the pre-push hook is the whole of it: a guardrail in the working copy, which
+`git push --no-verify` steps around, and which a fresh clone has not installed
+until it runs `npm run setup:hooks`. CI *does* run on pull requests, so a red PR is
+visible before merge — that part is real.
+
+`test/hooks.test.js` checks the hook does block `master` and does not block feature
+branches, tags or deletions, because a hook that silently fails open is worse than
+none: it looks like protection.
+
 ## Observed versus chosen behaviour
 
 Kept explicit, because a reader that silently guesses is worse than one that
