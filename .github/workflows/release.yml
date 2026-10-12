@@ -131,9 +131,13 @@ jobs:
             Write-Output ("Manual build: {0} ({1:N1} MB) built and verified; nothing published" -f $_.Name, ($_.Length / 1MB))
           }
 
+      # The executable is already attached to the release permanently, so this is
+      # only useful if publishing fails after the build. Bounded rather than left at
+      # the ninety-day default, because it is a 108 MB file per release run.
       - name: Keep the executable as an artifact too
         uses: actions/upload-artifact@v7
         with:
           name: PageForge-portable
           path: release/*.exe
           if-no-files-found: error
+          retention-days: 7
