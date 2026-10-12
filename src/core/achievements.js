@@ -11,7 +11,7 @@
  */
 
 /** A page turn is counted per navigation, so re-opening a book does not inflate it. */
-export const DEFAULT_ACHIEVEMENT_STATE = {
+const DEFAULT_ACHIEVEMENT_STATE = {
   pagesTurned: 0,
   /** Books read to their last page, once each. */
   finished: [],
@@ -26,7 +26,7 @@ export const DEFAULT_ACHIEVEMENT_STATE = {
 const MAX_FINISHED = 500;
 const MAX_DAY_KEYS = 730;
 /** Reading between midnight and this hour counts as the small hours. */
-export const NIGHT_OWL_UNTIL_HOUR = 4;
+const NIGHT_OWL_UNTIL_HOUR = 4;
 
 /** Local calendar day for a date, as YYYY-MM-DD. */
 export const localDayKey = (date) => {
@@ -232,7 +232,7 @@ export const recordActivity = (state, activity) => {
 };
 
 /** What the achievements are measured against. */
-export const achievementMeasures = (state, { distinctBooks = 0, todayKey = "" } = {}) => {
+const achievementMeasures = (state, { distinctBooks = 0, todayKey = "" } = {}) => {
   const current = normalizeAchievementState(state);
   return {
     pagesTurned: current.pagesTurned,

@@ -24,7 +24,6 @@ import {
   keepPanelsWithArtwork,
   panelStripRows,
   panelsAreUsable,
-  panelsFormStrip,
 } from "../core/panels.js";
 import { describeStatus } from "../core/status.js";
 import {
@@ -1931,7 +1930,7 @@ const pumpStripQueue = () => {
     stripInFlight += 1;
     void detectPanelsForUrl(state.book.pages[index])
       .then((panels) => {
-        const usable = Array.isArray(panels) && panelsFormStrip(panels, pageSize(state.book.pages[index]));
+        const usable = Array.isArray(panels) && panelsAreUsable(panels, pageSize(state.book.pages[index]));
         state.stripPanels.set(index, usable ? panels : null);
       })
       .catch(() => state.stripPanels.set(index, null))

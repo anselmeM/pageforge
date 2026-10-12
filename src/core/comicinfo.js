@@ -165,7 +165,7 @@ export const findElement = (node, name) => {
 };
 
 /** Every element with a name, anywhere in the document. */
-export const findAllElements = (node, name) => {
+const findAllElements = (node, name) => {
   const wanted = name.toLowerCase();
   const found = [];
   for (const child of node.children ?? []) {
