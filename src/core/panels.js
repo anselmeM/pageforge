@@ -290,34 +290,87 @@ export const framePanel = ({ panel, page, viewport, rotation = 0, fill = 0.92 })
 export const isWorthGuiding = (panels) => panels.length > 1;
 
 /**
- * Limits for presenting a page as a strip of its panels.
+ * Variance of luminance inside one panel, over every pixel of it.
  *
- * A strip is less forgiving than guided view: a wrong split is a visible seam in
- * the middle of someone's reading, rather than one more keypress. So a page whose
- * detection looks implausible is shown whole instead.
+ * Every pixel rather than a sampled grid: a stride aliases against regular detail,
+ * and a panel of evenly spaced stripes can sample to a single colour and read as
+ * blank — which would drop real artwork. The image is already downscaled before
+ * this is called, so the whole panel is cheap to walk.
  */
-export const PANEL_STRIP_LIMITS = {
+export const panelVariance = (image, panel) => {
+  if (!image?.data) return 0;
+  const right = Math.min(image.width, panel.x + panel.width);
+  const bottom = Math.min(image.height, panel.y + panel.height);
+  let sum = 0;
+  let sumSquares = 0;
+  let count = 0;
+  for (let y = Math.max(0, panel.y); y < bottom; y += 1) {
+    for (let x = Math.max(0, panel.x); x < right; x += 1) {
+      const value = luminance(image.data, (y * image.width + x) * 4);
+      sum += value;
+      sumSquares += value * value;
+      count += 1;
+    }
+  }
+  if (count === 0) return 0;
+  const mean = sum / count;
+  return Math.max(0, sumSquares / count - mean * mean);
+};
+
+/**
+ * Drop panels that contain no artwork.
+ *
+ * Guided view frames one panel at a time, so a panel that is a flat band of
+ * background is a screen the reader has to look at that shows nothing — the most
+ * common way guided view "navigates to a blank space". The threshold is the same
+ * one the detector uses to call a line flat, which keeps this conservative: only a
+ * panel with essentially no variation at all is dropped, so a dark or quiet panel
+ * with line art in it survives.
+ */
+export const keepPanelsWithArtwork = (image, panels, options = {}) => {
+  const minimum = options.minimumVariance ?? PANEL_DEFAULTS.threshold;
+  return (panels ?? []).filter((panel) => panelVariance(image, panel) >= minimum);
+};
+
+/**
+ * Whether a page's detected panels are trustworthy enough to guide or stack.
+ *
+ * All or nothing, deliberately. Accepting the panels that survive shape filtering
+ * and dropping the rest was tried, and measured: on a real book it recovered two
+ * pages but let a misread cover back in. The cover's leftover boxes — a small
+ * fragment and a full-height column — cover 44% of the page, while the least
+ * convincing page that guides correctly covers 57%. Separating those two needs a
+ * threshold fitted to three pages, which is not a rule, so a page with any
+ * implausible box is shown whole instead.
+ *
+ * Guided view and the vertical strip share this because a wrong split is a wasted
+ * screen in one and a visible seam in the other.
+ */
+export const panelsAreUsable = (panels, page) => {
+  if (!Array.isArray(panels) || panels.length < 2) return false;
+  if (panels.length > PANEL_LIMITS.maxPanels) return false;
+  const area = page.width * page.height;
+  if (area <= 0) return false;
+  const covered = panels.reduce((sum, panel) => sum + panel.width * panel.height, 0) / area;
+  if (covered < PANEL_LIMITS.minCoverage) return false;
+  return panels.every((panel) => {
+    const aspect = panel.width / Math.max(1, panel.height);
+    return aspect <= PANEL_LIMITS.maxAspect && aspect >= 1 / PANEL_LIMITS.maxAspect;
+  });
+};
+
+/** Limits for presenting a page as a set of panels. */
+export const PANEL_LIMITS = {
   /** More panels than this on one page usually means the page was cut to pieces. */
   maxPanels: 18,
-  /** Panels must cover at least this much of the page to be worth stacking. */
+  /** Panels must cover at least this much of the page to be worth stepping through. */
   minCoverage: 0.4,
   /** Panels thinner than this (either way) are slices, not panels. */
   maxAspect: 6,
 };
 
-/** Whether a page's detected panels are trustworthy enough to stack. */
-export const panelsFormStrip = (panels, page) => {
-  if (!Array.isArray(panels) || panels.length < 2) return false;
-  if (panels.length > PANEL_STRIP_LIMITS.maxPanels) return false;
-  const area = page.width * page.height;
-  if (area <= 0) return false;
-  const covered = panels.reduce((sum, panel) => sum + panel.width * panel.height, 0) / area;
-  if (covered < PANEL_STRIP_LIMITS.minCoverage) return false;
-  return panels.every((panel) => {
-    const aspect = panel.width / Math.max(1, panel.height);
-    return aspect <= PANEL_STRIP_LIMITS.maxAspect && aspect >= 1 / PANEL_STRIP_LIMITS.maxAspect;
-  });
-};
+/** Kept for the older name; both modes now share one rule. */
+export const panelsFormStrip = panelsAreUsable;
 
 /**
  * One row per panel, as CSS background-crop geometry at a given column width.

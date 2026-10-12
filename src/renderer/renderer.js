@@ -18,7 +18,14 @@ import {
 import { clampScale, fitScale, zoomStep } from "../core/fit.js";
 import { comicInfoLabel } from "../core/comicinfo.js";
 import { lensPosition, magnifierSample } from "../core/magnifier.js";
-import { detectPanels, isWorthGuiding, framePanel, panelStripRows, panelsFormStrip } from "../core/panels.js";
+import {
+  detectPanels,
+  framePanel,
+  keepPanelsWithArtwork,
+  panelStripRows,
+  panelsAreUsable,
+  panelsFormStrip,
+} from "../core/panels.js";
 import { describeStatus } from "../core/status.js";
 import {
   railWidth,
@@ -205,7 +212,9 @@ const panMargin = () => Math.min(120, viewportSize().height * 0.2);
 
 const updateStatus = () => {
   const spread = currentSpread();
-  const panels = currentPanels();
+  // The panels the reader actually steps through, which excludes any the detector
+  // proposed but were refused.
+  const panels = guidedPanelList();
   const status = describeStatus({
     hasBook: state.book !== null && spread !== null,
     displayName: state.book?.displayName,
@@ -644,10 +653,19 @@ const reportReady = async () => {
     progress: progressLabel.textContent,
     pageText: pageLabel.textContent,
     zoomText: zoomLabel.textContent,
-    guidedPanels: currentPanels()?.length ?? 0,
+    guidedPanels: guidedPanelList()?.length ?? 0,
+    guidedDetected: currentPanels()?.length ?? 0,
     guidedStep: state.guidedStep,
+    // Whether guided view is actually framing a panel. The detected count alone is
+    // misleading: panels can be detected and then refused as untrustworthy, in
+    // which case the page is shown whole and no camera is engaged.
+    guidedUsable:
+      currentPanels() !== null &&
+      state.nodes[0] !== undefined &&
+      panelsAreUsable(currentPanels(), pageSize(state.nodes[0].page)),
+    guidedCamera: state.guidedCamera === true,
     // Diagnostic: the boxes themselves, in page coordinates.
-    guidedBoxes: (currentPanels() ?? []).slice(0, 4).map((panel) => ({
+    guidedBoxes: (guidedPanelList() ?? []).slice(0, 4).map((panel) => ({
       x: Math.round(panel.x),
       y: Math.round(panel.y),
       w: Math.round(panel.width),
@@ -1429,6 +1447,19 @@ const currentPanels = () => {
   return panels === undefined ? null : panels;
 };
 
+/**
+ * The panels guided view will step through, or null when the page is shown whole.
+ *
+ * One place decides this so the camera, the spotlight and the status line cannot
+ * disagree about which panel is being read.
+ */
+const guidedPanelList = () => {
+  const panels = currentPanels();
+  const node = state.nodes[0];
+  if (panels === null || node === undefined) return null;
+  return panelsAreUsable(panels, pageSize(node.page)) ? panels : null;
+};
+
 /** Sample a page element and detect its panels, in the page's own coordinates. */
 const detectPanelsInElement = (element, base, options = {}) => {
   const scale = Math.min(PANEL_SAMPLE_MAX / base.width, PANEL_SAMPLE_MAX / base.height, 1);
@@ -1439,12 +1470,15 @@ const detectPanelsInElement = (element, base, options = {}) => {
   panelSampleContext.clearRect(0, 0, width, height);
   panelSampleContext.drawImage(element, 0, 0, width, height);
   const image = panelSampleContext.getImageData(0, 0, width, height);
-  const panels = detectPanels(image, {
+  const detected = detectPanels(image, {
     rightToLeft: state.rightToLeft === true,
     gutter: Math.max(1, Math.round(PAGE_GUTTER_PX * scale)),
     minSize: Math.max(12, Math.round(Math.min(base.width, base.height) * PAGE_MIN_PANEL_PX * scale)),
     ...options,
   });
+  // A panel with no variation in it is a band of background. Framing one shows the
+  // reader nothing, which is the commonest way guided view lands on a blank screen.
+  const panels = keepPanelsWithArtwork(image, detected);
   return panels.map((panel) => ({
     x: panel.x / scale,
     y: panel.y / scale,
@@ -1490,12 +1524,15 @@ const ensureGuidedCamera = (options = {}) => {
     }
   }
   const panels = state.guidedPanels.get(index);
-  if (!isWorthGuiding(panels)) {
-    // A splash page or a single-panel page is shown whole, which is what the
-    // normal fit already does.
+  if (!panelsAreUsable(panels, pageSize(node.page))) {
+    // A splash page, a single-panel page, or a page the detector could not read
+    // convincingly is shown whole, which is what the normal fit does.
     state.guidedCamera = false;
     spotlightEl.hidden = true;
     updateStatus();
+    // The panels are known now, so a step that was waiting can be answered: this
+    // page has nothing to step through, so the reader goes where they asked.
+    dischargePendingSteps();
     return false;
   }
 
@@ -1511,13 +1548,17 @@ const ensureGuidedCamera = (options = {}) => {
   state.offset = camera.offset;
   state.guidedCamera = true;
   layoutSpread({ animate: options.animate === true });
+  // The panels are known now, so a step that was waiting can be taken.
+  dischargePendingSteps();
   return true;
 };
 
 /** Move the spotlight over the focused panel, in viewport coordinates. */
 const positionSpotlight = () => {
   const node = state.nodes[0];
-  const panels = currentPanels();
+  // Must be the same list the camera frames, or with a rejected panel the
+  // spotlight would sit somewhere other than the panel being shown.
+  const panels = guidedPanelList();
   if (!state.guidedCamera || node === undefined || panels === null || state.preferences.guidedSpotlight !== true) {
     spotlightEl.hidden = true;
     return;
@@ -1534,17 +1575,68 @@ const positionSpotlight = () => {
   spotlightEl.hidden = false;
 };
 
-/** Step within the page's panels. Returns false when the page is exhausted. */
+/**
+ * Steps requested before the page's panels were known, as a signed count.
+ *
+ * A page's panels cannot be read until its image has decoded, and a key pressed in
+ * that window used to fall through to a page turn — so pressing forward on a large
+ * page skipped the panels entirely, which is what "guided view misses pages" looked
+ * like. Presses are counted rather than collapsed, because pressing twice and moving
+ * once is its own kind of wrong.
+ */
+let pendingSteps = 0;
+
+/**
+ * Step within the page's panels.
+ *
+ * @returns {"stepped"|"waiting"|"no-panels"} `waiting` means the page is still
+ *   loading and the request has been queued; `no-panels` means the page has
+ *   nothing to step through, so the caller should turn the page.
+ */
 const stepPanel = (direction) => {
-  const panels = currentPanels();
-  if (!guidedActive() || panels === null || !isWorthGuiding(panels)) return false;
+  if (!guidedActive()) return "no-panels";
+  // Detection is synchronous once the page is on screen, so try now.
+  if (currentPanels() === null) ensureGuidedCamera();
+
+  const panels = guidedPanelList();
+  // Still nothing detected at all: the page is still loading, so queue the press
+  // rather than turning the page and skipping panels the reader asked for.
+  if (panels === null && currentPanels() === null) {
+    pendingSteps += direction;
+    return "waiting";
+  }
+  if (panels === null) return "no-panels";
+
   const next = state.guidedStep + direction;
-  if (next < 0 || next >= panels.length) return false;
+  if (next < 0 || next >= panels.length) return "no-panels";
   state.guidedStep = next;
   state.guidedCamera = false;
   ensureGuidedCamera({ animate: true });
   updateStatus();
-  return true;
+  return "stepped";
+};
+
+/**
+ * Answer the steps that were queued while the page was loading.
+ *
+ * Each queued press either steps a panel or, once the page is exhausted, turns a
+ * page. Presses left over after a turn are carried to the next page rather than
+ * dropped, so pressing forward three times moves forward three times.
+ */
+const dischargePendingSteps = () => {
+  if (pendingSteps === 0) return;
+  const moves = pendingSteps;
+  pendingSteps = 0;
+  const direction = moves > 0 ? 1 : -1;
+  for (let taken = 0; taken < Math.abs(moves); taken += 1) {
+    if (stepPanel(direction) !== "no-panels") continue;
+    const remaining = Math.abs(moves) - taken - 1;
+    goToSpread(state.spreadIndex + direction);
+    // Set after the move: going to a spread clears the queue, and the remainder
+    // belongs to the page we just arrived on.
+    pendingSteps = direction * remaining;
+    return;
+  }
 };
 
 /* Navigation --------------------------------------------------------------- */
@@ -1553,6 +1645,8 @@ const goToSpread = (index) => {
   if (state.book === null || state.spreads.length === 0) return;
   // Moving off the resumed page makes the banner stale.
   hideResumeBanner();
+  // A step waiting for the previous page must not fire against this one.
+  pendingSteps = 0;
   const clamped = Math.min(Math.max(index, 0), state.spreads.length - 1);
   state.spreadIndex = clamped;
   // A new page starts at its first panel.
@@ -1576,11 +1670,11 @@ const goToSpread = (index) => {
 };
 
 const nextSpread = () => {
-  if (stepPanel(1)) return;
+  if (stepPanel(1) !== "no-panels") return;
   goToSpread(state.spreadIndex + 1);
 };
 const previousSpread = () => {
-  if (stepPanel(-1)) return;
+  if (stepPanel(-1) !== "no-panels") return;
   goToSpread(state.spreadIndex - 1);
 };
 

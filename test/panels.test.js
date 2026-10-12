@@ -10,7 +10,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { PANEL_DEFAULTS, detectPanels, framePanel, isWorthGuiding, panelStripRows, panelsFormStrip, sortPanels } from "../src/core/panels.js";
+import {
+  PANEL_DEFAULTS,
+  detectPanels,
+  framePanel,
+  isWorthGuiding,
+  keepPanelsWithArtwork,
+  panelStripRows,
+  panelVariance,
+  panelsAreUsable,
+  panelsFormStrip,
+  sortPanels,
+} from "../src/core/panels.js";
 
 const WHITE = 255;
 const BLACK = 0;
@@ -314,6 +325,94 @@ describe("panel strip", () => {
     const rows = panelStripRows({ panels: thin, page: page400, columnWidth: 0 });
     assert.equal(rows[0].width, 1);
     assert.ok(rows[0].height >= 1);
+  });
+});
+
+describe("panels with no artwork", () => {
+  it("measures variation inside a panel", () => {
+    const image = page(400, 400);
+    image.artwork(0, 0, 200, 200);
+    assert.ok(panelVariance(image, { x: 0, y: 0, width: 200, height: 200 }) > 1000, "artwork varies");
+    assert.equal(panelVariance(image, { x: 200, y: 200, width: 200, height: 200 }), 0, "blank does not");
+  });
+
+  it("survives a panel that runs off the edge of the page", () => {
+    const image = page(100, 100);
+    image.artwork(0, 0, 50, 50);
+    assert.doesNotThrow(() => panelVariance(image, { x: 80, y: 80, width: 90, height: 90 }));
+    assert.equal(panelVariance(image, { x: 0, y: 0, width: 0, height: 0 }), 0);
+    assert.equal(panelVariance(null, { x: 0, y: 0, width: 10, height: 10 }), 0);
+  });
+
+  it("drops the panel that is only background", () => {
+    const image = page(600, 400);
+    image.artwork(0, 0, 280, 400);
+    image.artwork(320, 0, 280, 400);
+    const panels = [
+      { x: 0, y: 0, width: 280, height: 400 },
+      { x: 320, y: 0, width: 280, height: 400 },
+      // A flat band between them, which is exactly what guided view used to frame.
+      { x: 280, y: 0, width: 40, height: 400 },
+    ];
+    const kept = keepPanelsWithArtwork(image, panels);
+    assert.equal(kept.length, 2, "only the two panels with art survive");
+    assert.deepEqual(kept.map((panel) => panel.x), [0, 320]);
+  });
+
+  it("keeps a quiet panel that still has line art in it", () => {
+    // A dark scene is not a blank one; only a panel with no variation is dropped.
+    const image = page(300, 300);
+    image.artwork(0, 0, 300, 300);
+    assert.equal(keepPanelsWithArtwork(image, [{ x: 0, y: 0, width: 300, height: 300 }]).length, 1);
+  });
+
+  it("returns nothing when every panel is blank, so the page is shown whole", () => {
+    const image = page(400, 400);
+    const panels = [
+      { x: 0, y: 0, width: 200, height: 400 },
+      { x: 200, y: 0, width: 200, height: 400 },
+    ];
+    assert.deepEqual(keepPanelsWithArtwork(image, panels), []);
+  });
+
+  it("copes with no panels at all", () => {
+    assert.deepEqual(keepPanelsWithArtwork(page(10, 10), []), []);
+    assert.deepEqual(keepPanelsWithArtwork(page(10, 10), null), []);
+  });
+});
+
+describe("whether a page is worth guiding or stacking", () => {
+  const page400 = { width: 400, height: 600 };
+  const grid = [
+    { x: 0, y: 0, width: 190, height: 290 },
+    { x: 210, y: 0, width: 190, height: 290 },
+    { x: 0, y: 310, width: 190, height: 290 },
+    { x: 210, y: 310, width: 190, height: 290 },
+  ];
+
+  it("accepts a page of panels", () => {
+    assert.equal(panelsAreUsable(grid, page400), true);
+  });
+
+  it("refuses the slivers a misread cover produces", () => {
+    // The shapes the detector actually returned for a real cover: tall thin strips
+    // that guided view used to step through, showing mostly empty background.
+    const slivers = [
+      { x: 294, y: 248, width: 180, height: 1402 },
+      { x: 332, y: 38, width: 279, height: 180 },
+      { x: 993, y: 0, width: 863, height: 3056 },
+    ];
+    assert.equal(panelsAreUsable(slivers, { width: 1988, height: 3056 }), false);
+  });
+
+  it("refuses a single panel, an empty list and junk", () => {
+    assert.equal(panelsAreUsable([grid[0]], page400), false);
+    assert.equal(panelsAreUsable([], page400), false);
+    assert.equal(panelsAreUsable(null, page400), false);
+  });
+
+  it("is the same rule guided view and the strip both use", () => {
+    assert.equal(panelsFormStrip, panelsAreUsable);
   });
 });
 

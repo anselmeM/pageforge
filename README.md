@@ -302,11 +302,36 @@ The detector samples the page at up to 800px and converts its parameters from pa
 pixels, because a gutter that is 5px on the page is under 2px in a quarter-scale
 sample and would otherwise be dismissed as noise.
 
-Honest limits: detection is heuristic, so it is best on ordinary panel grids. A
-splash page or a cover is shown whole or split oddly — that is a property of the
-technique, not a bug to hide. The camera, the panel geometry and the detection
-thresholds are all adjustable in Reading Quality (`Ctrl`+`,`): panel fill, travel
-time, easing, and whether the spotlight dims the rest of the page.
+Honest limits: detection is heuristic, so it is best on ordinary panel grids. The
+camera, the panel geometry and the detection thresholds are all adjustable in
+Reading Quality (`Ctrl`+`,`): panel fill, travel time, easing, and whether the
+spotlight dims the rest of the page.
+
+### When a page cannot be read as panels
+
+Guided view only steps through a page when the detected panels are believable: at
+least two of them, covering at least 40% of the page, none thinner than 1:6. If the
+page fails any of that — a splash page, a cover, artwork the detector cut into
+slivers — the whole page is shown instead and the page keys move straight on. The
+alternative, which this replaced, was stepping the reader through fragments of a
+cover, most of them empty.
+
+That check is all-or-nothing on purpose. Accepting the panels that survive and
+ignoring the rest was tried and measured on a real book: it recovered two guideable
+pages, but it let a misread cover back in, because the cover's leftover boxes cover
+44% of the page while the least convincing page that guides correctly covers 57%.
+Separating those two needs a threshold fitted to three pages, which is not a rule.
+
+Two things follow from the panels being read from the page image rather than from
+metadata:
+
+- **A panel with nothing in it is dropped.** A flat band of background would
+  otherwise become a screen showing nothing, which is the commonest way guided view
+  lands somewhere blank.
+- **A key pressed before the page has finished decoding is queued, not ignored.**
+  Panels cannot be read until the image exists, and turning the page in that window
+  skipped the panels the reader asked for. Presses are counted, so pressing forward
+  three times moves forward three times — through panels first, then pages.
 
 ## Magnifier, slideshow and shortcuts
 
@@ -632,7 +657,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 305 unit, store, database, IPC, status, thumbnail, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
+npm test        # 315 unit, store, database, IPC, status, thumbnail, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
