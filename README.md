@@ -657,7 +657,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 321 unit, store, database, IPC, status, thumbnail, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
+npm test        # unit, store, database, IPC, status, thumbnail, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
