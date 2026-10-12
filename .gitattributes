@@ -1,0 +1,11 @@
+# Keep the hook runnable whatever `core.autocrlf` is set to.
+#
+# A CRLF shebang makes Git for Windows report "bad interpreter" and the hook fails
+# open or closed depending on the version, which is a confusing way to discover the
+# problem. Hooks are shell scripts, so they are always LF.
+.githooks/* text eol=lf
+
+# The app is shipped as a Windows executable, and these are read by tools that do
+# not care either way, but keeping them stable avoids whole-file diffs.
+*.yml text eol=lf
+*.yaml text eol=lf

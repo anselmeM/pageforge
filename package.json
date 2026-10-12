@@ -12,6 +12,7 @@
   "main": "src/main/main.cjs",
   "scripts": {
     "start": "node scripts/launch.mjs",
+    "setup:hooks": "git config core.hooksPath .githooks && node -e \"console.log('pre-push hook enabled: direct pushes to master are blocked')\"",
     "test": "node --test \"test/*.test.js\"",
     "fixture": "node scripts/make-fixture.mjs",
     "smoke": "node scripts/smoke.mjs",
