@@ -657,7 +657,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 315 unit, store, database, IPC, status, thumbnail, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
+npm test        # 322 unit, store, database, IPC, status, thumbnail, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement, library and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
@@ -687,19 +687,27 @@ Every change lands through a pull request; `master` is the default branch. See
 [AGENTS.md](AGENTS.md) for the rules given to AI agents working here.
 
 ```sh
-npm run setup:hooks      # once per clone: block direct pushes to master
+npm run setup:hooks      # once per clone: refuse direct pushes before leaving the machine
 ```
 
-**`master` is not protected on GitHub, and cannot be.** Real enforcement is
-server-side branch protection, which GitHub refuses for a private repository on a
-free plan — both branch protection and rulesets return `403 Upgrade to GitHub Pro
-or make this repository public`. That is a plan limit, not a permissions problem.
-So the pre-push hook is the whole of it: a guardrail in the working copy, which
-`git push --no-verify` steps around, and which a fresh clone has not installed
-until it runs `npm run setup:hooks`. CI *does* run on pull requests, so a red PR is
-visible before merge — that part is real.
+**`master` is protected on GitHub.** A pull request is required, the three CI jobs
+must pass (`Unit tests`, `Smoke test (Electron)`, `Package and verify the build`),
+the branch must be up to date with `master`, force-pushing and deleting are refused,
+and the rule applies to admins too — so it cannot be bypassed by being the owner.
+Verified by attempting a direct push with the local hook deliberately skipped:
 
-`test/hooks.test.js` checks the hook does block `master` and does not block feature
+```
+remote: error: GH006: Protected branch update failed for refs/heads/master.
+remote: - Changes must be made through a pull request.
+remote: - 3 of 3 required status checks are expected.
+```
+
+The pre-push hook is a convenience on top of that, not the enforcement. It refuses a
+direct push early, before a network round trip, and it only exists in clones that
+have run `npm run setup:hooks` — `git push --no-verify` skips it either way. What
+actually says no is the server.
+
+`test/hooks.test.js` checks the hook blocks `master` and does not block feature
 branches, tags or deletions, because a hook that silently fails open is worse than
 none: it looks like protection.
 

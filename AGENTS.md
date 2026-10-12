@@ -9,12 +9,19 @@ app with a portable executable as the deliverable.
 ## Golden rules
 
 1. **Never push to `master` directly.** Branch, commit, open a PR, merge with
-   `--squash --delete-branch`. A local pre-push hook enforces this; enable it with
-   `npm run setup:hooks`. Server-side branch protection is **not available** on this
-   repository — it is private on a free plan, and GitHub returns 403 for both branch
-   protection and rulesets. The hook is a guardrail, not a gate: `--no-verify` steps
-   around it, and a fresh clone has no hook until it is enabled. Do not describe
-   `master` as protected, because it is not.
+   `--squash --delete-branch`. `master` **is protected on GitHub**: a PR is required,
+   three checks must pass, the branch must be up to date, force-pushing and deleting
+   are refused, and the rule applies to admins. So a direct push fails server-side
+   even if the local hook is skipped. A pre-push hook refuses it earlier, before a
+   network round trip — enable it with `npm run setup:hooks`. The hook is a
+   convenience, not the enforcement; it exists only in clones that have run that.
+   Protection exists because the repository is **public**; a private free-plan
+   repository cannot have it, and GitHub returns 403 for both protection and rulesets.
+6. **This repository is public.** Everything committed is published, including the
+   history and every commit body. Do not commit a licensed work — that is why eight
+   screenshots of a real comic were removed. Screenshots must be taken from generated
+   fixtures. Do not commit personal paths, tokens, or anything read from someone
+   else's machine.
 2. **Conventional Commits**, one logical change per commit, imperative subject,
    body explaining *why*. Types: `feat` `fix` `refactor` `perf` `test` `docs` `ci`
    `chore` `security` `revert`.
