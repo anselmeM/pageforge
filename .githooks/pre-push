@@ -1,34 +1,88 @@
 #!/bin/sh
-# Refuse a direct push to the default branch, so every change lands through a PR.
+# Two jobs, in this order:
+#   1. refuse a direct push to the default branch, so every change lands through a PR
+#   2. run the test gate, so a tree that fails does not leave the machine
 #
-# This is a convenience, not the enforcement. master is protected on GitHub: a pull
-# request is required, three checks must pass, and the rule applies to admins, so a
-# direct push fails server-side even when this hook is skipped. The point of the hook
-# is to say so before the network round trip, and it only exists in clones that have
-# run `npm run setup:hooks`.
+# Job 2 is the one that does not depend on the server. Branch protection is a paid
+# feature for a private repository, so if this repository is ever private again the
+# hook is what stands between it and a broken master. It also saves a CI cycle,
+# which is about six minutes, for a test run that takes six seconds.
 #
-# Enable with: git config core.hooksPath .githooks   (or npm run setup:hooks)
+# Both jobs are convenience, not authority: this lives in the working copy, so a
+# clone has no hook until `npm run setup:hooks`, and `git push --no-verify` skips it.
+# What the server says still wins.
+#
+# Job 1 deliberately uses shell built-ins only -- no cat, no grep, no sed. An earlier
+# version piped stdin through `cat`, and where `cat` was missing the ref list came
+# back empty, no ref matched the default branch, and the hook allowed the very push
+# it exists to refuse. It failed open, silently, and looked like it was working. A
+# hook that can be disabled by a missing utility is worse than no hook, because it
+# is trusted.
+#
+# The gate tests the working tree rather than the commits being pushed, which is what
+# you want while working and worth knowing if the two differ.
+#
+# Environment:
+#   PAGEFORGE_SKIP_TESTS=1   skip job 2, for pushing a deliberate work in progress
+#   PAGEFORGE_TEST_CMD=...   replace `npm test`, so the gate itself is testable
 
 DEFAULT_BRANCH="master"
+ZERO="0000000000000000000000000000000000000000"
+TEST_CMD="${PAGEFORGE_TEST_CMD:-npm test}"
 
-while read -r local_ref local_sha remote_ref remote_sha; do
-  if [ "$remote_ref" = "refs/heads/$DEFAULT_BRANCH" ]; then
-    # Deleting the branch is not the thing this guards against, and neither is a
-    # tag push, which is how releases are published.
-    if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
-      exit 0
-    fi
-    echo "ERROR: direct push to '$DEFAULT_BRANCH' is blocked. Use a feature branch and a PR." >&2
-    echo "" >&2
-    echo "  git switch -c <type>/<description>" >&2
-    echo "  git commit -m '<type>: <summary>'" >&2
-    echo "  git push -u origin <type>/<description>" >&2
-    echo "  gh pr create --fill && gh pr checks --watch" >&2
-    echo "  gh pr merge --squash --delete-branch" >&2
-    echo "" >&2
-    echo "If this push genuinely must go straight to $DEFAULT_BRANCH," >&2
-    echo "re-run it with --no-verify and say why in the commit body." >&2
-    exit 1
+# Job 1: a direct push to the default branch, in one pass over stdin, using nothing
+# but the shell. Deleting the branch is not what this guards against, and neither is
+# a tag push, which is how releases are published.
+#
+# IFS is left at its default on purpose: `IFS= read -r a b c d` disables field
+# splitting, so the whole line lands in the first variable and the comparison below
+# never matches -- which made this allow the push it exists to refuse.
+blocks=0
+while read -r _local_ref local_sha remote_ref _remote_sha || [ -n "$_local_ref" ]; do
+  if [ "$remote_ref" = "refs/heads/$DEFAULT_BRANCH" ] && [ "$local_sha" != "$ZERO" ]; then
+    blocks=1
   fi
 done
+
+if [ "$blocks" = "1" ]; then
+  echo "ERROR: direct push to '$DEFAULT_BRANCH' is blocked. Use a feature branch and a PR." >&2
+  echo "" >&2
+  echo "  git switch -c <type>/<description>" >&2
+  echo "  git commit -m '<type>: <summary>'" >&2
+  echo "  git push -u origin <type>/<description>" >&2
+  echo "  gh pr create --fill && gh pr checks --watch" >&2
+  echo "  gh pr merge --squash --delete-branch" >&2
+  echo "" >&2
+  echo "A tag push is allowed, because that is how releases are published." >&2
+  echo "If this must go straight to $DEFAULT_BRANCH, re-run with --no-verify and say why." >&2
+  exit 1
+fi
+
+# Job 2: the test gate.
+if [ "${PAGEFORGE_SKIP_TESTS:-}" = "1" ]; then
+  echo "pre-push: test gate skipped (PAGEFORGE_SKIP_TESTS=1)" >&2
+  exit 0
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+  # A clone without the toolchain must not be unable to push at all.
+  echo "pre-push: npm not found, so the test gate cannot run" >&2
+  exit 0
+fi
+
+echo "pre-push: running '$TEST_CMD'"
+if ! output=$($TEST_CMD 2>&1); then
+  echo "ERROR: '$TEST_CMD' failed, so this push is refused." >&2
+  # Truncation is a nicety; a missing tail must not turn a failure into a pass.
+  if command -v tail >/dev/null 2>&1; then
+    printf '%s\n' "$output" | tail -n 30 >&2
+  else
+    printf '%s\n' "$output" >&2
+  fi
+  echo "" >&2
+  echo "Fix it, or re-run with PAGEFORGE_SKIP_TESTS=1 to push a work in progress." >&2
+  exit 1
+fi
+
+echo "pre-push: tests pass"
 exit 0
