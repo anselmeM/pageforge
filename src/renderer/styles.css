@@ -191,14 +191,14 @@ body {
   display: none;
 }
 
-.scroll-page {
-  display: block;
+.strip-row {
   flex: none;
-  background: #101014;
+  display: block;
+  background-color: #101014;
+  background-repeat: no-repeat;
 }
 
-.scroll-page img,
-.scroll-page canvas {
+.strip-row canvas {
   display: block;
 }
 

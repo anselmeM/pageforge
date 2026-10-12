@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { PANEL_DEFAULTS, detectPanels, framePanel, isWorthGuiding, sortPanels } from "../src/core/panels.js";
+import { PANEL_DEFAULTS, detectPanels, framePanel, isWorthGuiding, panelStripRows, panelsFormStrip, sortPanels } from "../src/core/panels.js";
 
 const WHITE = 255;
 const BLACK = 0;
@@ -231,6 +231,89 @@ describe("guided-view camera", () => {
     });
     assert.ok(Number.isFinite(camera.scale) && camera.scale > 0);
     assert.ok(Number.isFinite(camera.offset.x) && Number.isFinite(camera.offset.y));
+  });
+});
+
+describe("panel strip", () => {
+  const page400 = { width: 400, height: 600 };
+  const grid = [
+    { x: 0, y: 0, width: 190, height: 290 },
+    { x: 210, y: 0, width: 190, height: 290 },
+    { x: 0, y: 310, width: 190, height: 290 },
+    { x: 210, y: 310, width: 190, height: 290 },
+  ];
+
+  it("is worth stacking only for a plausible multi-panel page", () => {
+    assert.equal(panelsFormStrip(grid, page400), true);
+    assert.equal(panelsFormStrip([], page400), false);
+    assert.equal(panelsFormStrip(null, page400), false);
+    // A splash page is one panel covering everything: shown whole, not stacked.
+    assert.equal(panelsFormStrip([{ x: 0, y: 0, width: 400, height: 600 }], page400), false);
+  });
+
+  it("refuses a page whose detected panels are small and scattered", () => {
+    // This is the shape of the real failure: a cover whose flat areas were read
+    // as gutters, leaving small pieces that together cover little of the page.
+    const fragments = Array.from({ length: 13 }, (_, index) => ({
+      x: (index % 4) * 100,
+      y: Math.floor(index / 4) * 100,
+      width: 60,
+      height: 60,
+    }));
+    assert.equal(panelsFormStrip(fragments, page400), false, "coverage is under 20%");
+  });
+
+  it("refuses a page cut into more pieces than a page plausibly has", () => {
+    const many = Array.from({ length: 20 }, (_, index) => ({
+      x: (index % 5) * 80,
+      y: Math.floor(index / 5) * 150,
+      width: 80,
+      height: 80,
+    }));
+    assert.equal(panelsFormStrip(many, page400), false, "20 panels is fragmentation");
+  });
+
+  it("refuses panels that cover too little of the page", () => {
+    const sparse = [
+      { x: 0, y: 0, width: 100, height: 100 },
+      { x: 200, y: 0, width: 100, height: 100 },
+    ];
+    assert.equal(panelsFormStrip(sparse, page400), false, "coverage is 8% of the page");
+  });
+
+  it("refuses a slice, which is a gutter artefact rather than a panel", () => {
+    const withSlice = [...grid, { x: 0, y: 590, width: 400, height: 8 }];
+    assert.equal(panelsFormStrip(withSlice, page400), false);
+  });
+
+  it("gives one row per panel, cropping the page by background geometry", () => {
+    const rows = panelStripRows({ panels: grid, page: page400, columnWidth: 400 });
+    assert.equal(rows.length, 4);
+    const scale = 400 / 190;
+    for (const row of rows) {
+      assert.equal(row.width, 400);
+      assert.equal(row.height, Math.round(290 * scale));
+      assert.equal(row.backgroundWidth, Math.round(400 * scale));
+      assert.equal(row.backgroundHeight, Math.round(600 * scale));
+    }
+    assert.equal(rows[0].offsetX, 0);
+    assert.equal(rows[0].offsetY, 0);
+    assert.equal(rows[1].offsetX, -Math.round(210 * scale), "second column crops from x=210");
+    assert.equal(rows[2].offsetY, -Math.round(310 * scale), "second row crops from y=310");
+  });
+
+  it("returns null rather than rows for a page it will not stack", () => {
+    assert.equal(panelStripRows({ panels: [grid[0]], page: page400, columnWidth: 400 }), null);
+  });
+
+  it("keeps rows at a floor of one pixel and a width of at least one", () => {
+    const thin = [
+      { x: 0, y: 0, width: 200, height: 300 },
+      { x: 0, y: 300, width: 200, height: 300 },
+    ];
+    const rows = panelStripRows({ panels: thin, page: page400, columnWidth: 0 });
+    assert.equal(rows[0].width, 1);
+    assert.ok(rows[0].height >= 1);
   });
 });
 

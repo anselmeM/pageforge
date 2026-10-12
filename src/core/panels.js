@@ -288,3 +288,57 @@ export const framePanel = ({ panel, page, viewport, rotation = 0, fill = 0.92 })
 
 /** Panels below a whole-page threshold in coverage are not worth stepping into. */
 export const isWorthGuiding = (panels) => panels.length > 1;
+
+/**
+ * Limits for presenting a page as a strip of its panels.
+ *
+ * A strip is less forgiving than guided view: a wrong split is a visible seam in
+ * the middle of someone's reading, rather than one more keypress. So a page whose
+ * detection looks implausible is shown whole instead.
+ */
+export const PANEL_STRIP_LIMITS = {
+  /** More panels than this on one page usually means the page was cut to pieces. */
+  maxPanels: 18,
+  /** Panels must cover at least this much of the page to be worth stacking. */
+  minCoverage: 0.4,
+  /** Panels thinner than this (either way) are slices, not panels. */
+  maxAspect: 6,
+};
+
+/** Whether a page's detected panels are trustworthy enough to stack. */
+export const panelsFormStrip = (panels, page) => {
+  if (!Array.isArray(panels) || panels.length < 2) return false;
+  if (panels.length > PANEL_STRIP_LIMITS.maxPanels) return false;
+  const area = page.width * page.height;
+  if (area <= 0) return false;
+  const covered = panels.reduce((sum, panel) => sum + panel.width * panel.height, 0) / area;
+  if (covered < PANEL_STRIP_LIMITS.minCoverage) return false;
+  return panels.every((panel) => {
+    const aspect = panel.width / Math.max(1, panel.height);
+    return aspect <= PANEL_STRIP_LIMITS.maxAspect && aspect >= 1 / PANEL_STRIP_LIMITS.maxAspect;
+  });
+};
+
+/**
+ * One row per panel, as CSS background-crop geometry at a given column width.
+ *
+ * The page is used as a background image rather than copied through a canvas:
+ * one decoded bitmap then serves every panel on the page, and the crop is just a
+ * background size and offset. Returns null when the page should be shown whole.
+ */
+export const panelStripRows = ({ panels, page, columnWidth }) => {
+  if (!panelsFormStrip(panels, page)) return null;
+  const width = Math.max(1, Math.round(columnWidth));
+  return panels.map((panel) => {
+    const scale = width / Math.max(1, panel.width);
+    return {
+      panel,
+      width,
+      height: Math.max(1, Math.round(panel.height * scale)),
+      backgroundWidth: Math.round(page.width * scale),
+      backgroundHeight: Math.round(page.height * scale),
+      offsetX: settle(-Math.round(panel.x * scale)),
+      offsetY: settle(-Math.round(panel.y * scale)),
+    };
+  });
+};

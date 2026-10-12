@@ -74,8 +74,16 @@ try {
   const fixture = await writeFixture(workspace);
   // A packaged parent may have exported ELECTRON_RUN_AS_NODE; without clearing
   // it, the executable would start as plain Node.
-  const env = { ...process.env, PAGEFORGE_STATE_DIR: join(workspace, "state") };
-  delete env.ELECTRON_RUN_AS_NODE;
+  //
+  // Each check gets its own state directory. Sharing one let a check that turns a
+  // mode on leave it on for the next check, so a later "toggle" turned it off
+  // again and the failure looked like a product bug rather than test coupling.
+  const envFor = (name) => {
+    const env = { ...process.env, PAGEFORGE_STATE_DIR: join(workspace, `state-${name}`) };
+    delete env.ELECTRON_RUN_AS_NODE;
+    return env;
+  };
+  const env = envFor("formats");
 
   const size = (await stat(executable)).size;
   process.stdout.write(`verify-dist: ${executable} (${(size / 1024 / 1024).toFixed(1)} MB)\n`);
@@ -99,7 +107,10 @@ try {
     // Read the report from a file, not the pipe: the portable launcher does not
     // attach the app's stdout.
     const reportFile = join(workspace, `report-${testCase.label.replaceAll(/[^a-z0-9]/giu, "")}.json`);
-    const result = await run(["--smoke", `--report=${reportFile}`, testCase.target], env);
+    const result = await run(
+      ["--smoke", `--report=${reportFile}`, testCase.target],
+      envFor(`format-${testCase.label}`),
+    );
     let report = null;
     try {
       report = JSON.parse(await readFile(reportFile, "utf8"));
@@ -132,7 +143,7 @@ try {
     const reportFile = join(workspace, `report-${label.replaceAll(/\s+/gu, "-")}.json`);
     const result = await run(
       ["--smoke", `--report=${reportFile}`, `--command=${command}`, fixture.archive],
-      env,
+      envFor(`fullscreen-${label.replaceAll(/\s+/gu, "-")}`),
     );
     let report = null;
     try {
@@ -157,7 +168,7 @@ try {
     const reportFile = join(workspace, "report-guided.json");
     const result = await run(
       ["--smoke", `--report=${reportFile}`, "--command=toggle-guided", fixture.panels],
-      env,
+      envFor("guided"),
     );
     let report = null;
     try {
@@ -184,7 +195,7 @@ try {
     const reportFile = join(workspace, "report-vertical.json");
     const result = await run(
       ["--smoke", `--report=${reportFile}`, "--command=toggle-vertical", fixture.archive],
-      env,
+      envFor("vertical"),
     );
     let report = null;
     try {
@@ -207,9 +218,37 @@ try {
     }
   }
 
+  // The panel strip stacks a page's panels as rows; the solid-colour archive used
+  // above has no panels, so it stays whole-page rows and this fixture is needed.
+  {
+    const reportFile = join(workspace, "report-strip.json");
+    const result = await run(
+      ["--smoke", `--report=${reportFile}`, "--command=toggle-vertical", fixture.panels],
+      envFor("panel-strip"),
+    );
+    let report = null;
+    try {
+      report = JSON.parse(await readFile(reportFile, "utf8"));
+    } catch {
+      report = parseReport(result.stdout);
+    }
+    try {
+      if (report === null) {
+        throw new Error(`no report (exit=${result.code})\n${result.stdout}\n${result.stderr}`);
+      }
+      assert.equal(report.smoke, "ok", `app reported ${JSON.stringify(report)}`);
+      assert.equal(report.stripActive, true, "the strip is on");
+      assert.equal(report.stripPanelTitle, 4, "the page was read as four panels");
+      assert.equal(report.verticalPages, 4, "so the column has four rows, not one");
+      process.stdout.write(`verify-dist: panel strip OK — ${report.verticalPages} panel rows\n`);
+    } catch (error) {
+      failures.push(`panel strip: ${error.message}`);
+    }
+  }
+
   // The capture path exercises the full render pipeline, not just the loader.
   const screenshot = join(workspace, "packaged.png");
-  const captured = await run([`--capture=${screenshot}`, fixture.archive], env);
+  const captured = await run([`--capture=${screenshot}`, fixture.archive], envFor("capture"));
   try {
     const info = await stat(screenshot);
     assert.ok(info.size > 5_000, `screenshot is suspiciously small (${info.size} bytes)`);

@@ -17,7 +17,7 @@ import {
 } from "../core/color.js";
 import { clampScale, fitScale, zoomStep } from "../core/fit.js";
 import { lensPosition, magnifierSample } from "../core/magnifier.js";
-import { detectPanels, isWorthGuiding, framePanel } from "../core/panels.js";
+import { detectPanels, isWorthGuiding, framePanel, panelStripRows, panelsFormStrip } from "../core/panels.js";
 import { DEFAULT_PREFERENCES, describeHistoryEntry, resolveStartPage } from "../core/library.js";
 import {
   COMMAND_LABELS,
@@ -65,6 +65,7 @@ const prefGuidedPan = document.getElementById("pref-guided-pan");
 const prefGuidedEasing = document.getElementById("pref-guided-easing");
 const prefGuidedSpotlight = document.getElementById("pref-guided-spotlight");
 const prefVertical = document.getElementById("pref-vertical");
+const prefPanelStrip = document.getElementById("pref-panel-strip");
 const prefBrightness = document.getElementById("pref-brightness");
 const prefContrast = document.getElementById("pref-contrast");
 const prefGrayscale = document.getElementById("pref-grayscale");
@@ -143,6 +144,14 @@ const state = {
   verticalZoom: 1,
   /** Which vertical pages currently hold a rendered PDF bitmap. */
   verticalRendered: new Map(),
+  /** Panels detected per page for the vertical strip, or null when unusable. */
+  stripPanels: new Map(),
+  /** Bumped when strip panels arrive, to trigger a rebuild. */
+  stripVersion: 0,
+  /** Lazily loads row backgrounds as they approach the viewport. */
+  stripObserver: null,
+  /** Counts pages whose panel sample could not be read. */
+  stripSampleFailures: 0,
   /** Panels detected for a page, by page index. */
   guidedPanels: new Map(),
   /** Which panel of the current page the camera is on. */
@@ -191,7 +200,9 @@ const updateStatus = () => {
   const panels = currentPanels();
   modeLabel.textContent = [
     verticalActive()
-      ? "Vertical scroll"
+      ? stripActive()
+        ? "Panel strip"
+        : "Vertical scroll"
       : state.doublePage && state.preferences.guidedView !== true
         ? "Double page"
         : "Single page",
@@ -542,11 +553,15 @@ const waitForFirstPage = async () => {
   }
 };
 
-/** Wait until the current page's panels have been detected. */
-const waitForPanels = async (timeoutMs = 5000) => {
-  if (!guidedActive()) return;
+/** Wait until the current page's panels have been detected, for either mode. */
+const waitForPanels = async (timeoutMs = 6000) => {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline && currentPanels() === null) {
+  const stillWaiting = () => {
+    if (guidedActive() && currentPanels() === null) return true;
+    if (stripActive() && !state.stripPanels.has(state.spreadIndex)) return true;
+    return false;
+  };
+  while (Date.now() < deadline && stillWaiting()) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 };
@@ -588,6 +603,13 @@ const reportReady = async () => {
     guidedView: state.preferences.guidedView === true,
     verticalScroll: state.preferences.verticalScroll === true,
     verticalPages: scrollEl.hidden ? 0 : scrollEl.childElementCount,
+    stripPanelPages: state.stripPanels.size,
+    stripPanelTitle: state.stripPanels.get(state.spreadIndex)?.length ?? 0,
+    stripActive: stripActive(),
+    stripQueue: stripQueue.length,
+    stripPending: stripPending.size,
+    stripInFlight,
+    stripSampleFailures: state.stripSampleFailures,
     progress: progressLabel.textContent,
     pageText: pageLabel.textContent,
     zoomText: zoomLabel.textContent,
@@ -668,6 +690,11 @@ const applyBook = async (book) => {
     if (typeof remembered.rotation === "number") state.rotation = remembered.rotation;
     if (typeof remembered.fitMode === "string") state.fitMode = remembered.fitMode;
   }
+
+  state.stripPanels.clear();
+  state.stripVersion = 0;
+  stripQueue = [];
+  stripPending.clear();
 
   rebuildSpreads();
   renderSpread();
@@ -931,6 +958,7 @@ const syncPreferenceControls = () => {
   prefGuidedSpotlight.checked = preferences.guidedSpotlight === true;
   document.getElementById("pref-guided-fill-value").textContent = Number(prefGuidedFill.value).toFixed(2);
   prefVertical.checked = preferences.verticalScroll === true;
+  prefPanelStrip.checked = preferences.panelStrip !== false;
   prefBrightness.value = String(preferences.brightness);
   prefContrast.value = String(preferences.contrast);
   prefGrayscale.value = String(preferences.grayscale);
@@ -975,8 +1003,12 @@ const writePreference = async (key, value) => {
     positionSpotlight();
     updateStatus();
   }
-  if (key === "verticalScroll") {
+  if (key === "verticalScroll" || key === "panelStrip") {
     state.verticalZoom = 1;
+    state.stripPanels.clear();
+    state.stripVersion += 1;
+    stripQueue = [];
+    stripPending.clear();
     rebuildSpreads();
     renderSpread();
     applyFit();
@@ -1024,6 +1056,9 @@ const wirePreferences = () => {
   }
   prefSharpen.addEventListener("change", () => void writePreference("sharpen", prefSharpen.checked));
   prefVertical.addEventListener("change", () => void writePreference("verticalScroll", prefVertical.checked));
+  prefPanelStrip.addEventListener("change", () =>
+    void writePreference("panelStrip", prefPanelStrip.checked),
+  );
   prefRemember.addEventListener("change", () =>
     void writePreference("rememberPerBook", prefRemember.checked),
   );
@@ -1214,6 +1249,30 @@ const currentPanels = () => {
   return panels === undefined ? null : panels;
 };
 
+/** Sample a page element and detect its panels, in the page's own coordinates. */
+const detectPanelsInElement = (element, base, options = {}) => {
+  const scale = Math.min(PANEL_SAMPLE_MAX / base.width, PANEL_SAMPLE_MAX / base.height, 1);
+  const width = Math.max(1, Math.round(base.width * scale));
+  const height = Math.max(1, Math.round(base.height * scale));
+  panelSampleCanvas.width = width;
+  panelSampleCanvas.height = height;
+  panelSampleContext.clearRect(0, 0, width, height);
+  panelSampleContext.drawImage(element, 0, 0, width, height);
+  const image = panelSampleContext.getImageData(0, 0, width, height);
+  const panels = detectPanels(image, {
+    rightToLeft: state.rightToLeft === true,
+    gutter: Math.max(1, Math.round(PAGE_GUTTER_PX * scale)),
+    minSize: Math.max(12, Math.round(Math.min(base.width, base.height) * PAGE_MIN_PANEL_PX * scale)),
+    ...options,
+  });
+  return panels.map((panel) => ({
+    x: panel.x / scale,
+    y: panel.y / scale,
+    width: panel.width / scale,
+    height: panel.height / scale,
+  }));
+};
+
 /**
  * Detect the panels of the page on screen.
  *
@@ -1225,28 +1284,7 @@ const currentPanels = () => {
  */
 const PAGE_GUTTER_PX = 5;
 const PAGE_MIN_PANEL_PX = 0.09;
-const detectPagePanels = (node) => {
-  const base = pageSize(node.page);
-  const scale = Math.min(PANEL_SAMPLE_MAX / base.width, PANEL_SAMPLE_MAX / base.height, 1);
-  const width = Math.max(1, Math.round(base.width * scale));
-  const height = Math.max(1, Math.round(base.height * scale));
-  panelSampleCanvas.width = width;
-  panelSampleCanvas.height = height;
-  panelSampleContext.clearRect(0, 0, width, height);
-  panelSampleContext.drawImage(node.element, 0, 0, width, height);
-  const image = panelSampleContext.getImageData(0, 0, width, height);
-  const panels = detectPanels(image, {
-    rightToLeft: state.rightToLeft === true,
-    gutter: Math.max(1, Math.round(PAGE_GUTTER_PX * scale)),
-    minSize: Math.max(12, Math.round(Math.min(base.width, base.height) * PAGE_MIN_PANEL_PX * scale)),
-  });
-  return panels.map((panel) => ({
-    x: panel.x / scale,
-    y: panel.y / scale,
-    width: panel.width / scale,
-    height: panel.height / scale,
-  }));
-};
+const detectPagePanels = (node) => detectPanelsInElement(node.element, pageSize(node.page));
 
 const nodeReadyForCapture = (node) =>
   node.kind === "image" ? node.element.complete && node.element.naturalWidth > 0 : node.renderedScale > 0;
@@ -1463,8 +1501,187 @@ const verticalColumnWidth = () => {
 };
 
 const clearVertical = () => {
+  if (state.stripObserver !== null) {
+    state.stripObserver.disconnect();
+    state.stripObserver = null;
+  }
+  scrollEl.replaceChildren();
+  scrollEl.dataset.signature = "";
+  state.verticalRendered.clear();
+};
+
+const stripActive = () =>
+  verticalActive() && state.preferences.panelStrip !== false && state.pdf === null;
+
+/** Rows for one page: one per panel when the strip can be trusted, else one row. */
+const appendRowsForPage = (index, columnWidth) => {
+  const page = state.book.pages[index];
+  const base = pageSize(page);
+  const panelRows = stripActive()
+    ? panelStripRows({ panels: state.stripPanels.get(index), page: base, columnWidth })
+    : null;
+
+  if (panelRows === null) {
+    const holder = document.createElement("div");
+    holder.className = "strip-row";
+    holder.dataset.index = String(index);
+    const height = Math.max(1, Math.round((base.height * columnWidth) / Math.max(1, base.width)));
+    holder.style.width = `${columnWidth}px`;
+    holder.style.height = `${height}px`;
+    if (page.kind === "pdf") {
+      const canvas = document.createElement("canvas");
+      canvas.className = "page-canvas";
+      holder.append(canvas);
+    } else {
+      // Nothing is fetched until a row approaches the viewport: a long comic
+      // must not decode every page up front.
+      holder.dataset.src = page.url;
+      holder.style.backgroundSize = `${columnWidth}px ${height}px`;
+      holder.style.backgroundPosition = "0 0";
+      state.stripObserver?.observe(holder);
+    }
+    scrollEl.append(holder);
+    return;
+  }
+
+  for (const [panelIndex, row] of panelRows.entries()) {
+    const holder = document.createElement("div");
+    holder.className = "strip-row";
+    holder.dataset.index = String(index);
+    holder.dataset.panel = String(panelIndex);
+    holder.style.width = `${row.width}px`;
+    holder.style.height = `${row.height}px`;
+    holder.dataset.src = page.url;
+    holder.style.backgroundSize = `${row.backgroundWidth}px ${row.backgroundHeight}px`;
+    holder.style.backgroundPosition = `${row.offsetX}px ${row.offsetY}px`;
+    state.stripObserver?.observe(holder);
+    scrollEl.append(holder);
+  }
+};
+
+const buildVerticalRows = (columnWidth) => {
   scrollEl.replaceChildren();
   state.verticalRendered.clear();
+  state.stripObserver?.disconnect();
+  state.stripObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const holder = entry.target;
+        if (holder.dataset.src !== undefined && holder.style.backgroundImage === "") {
+          holder.style.backgroundImage = `url("${holder.dataset.src}")`;
+        }
+        state.stripObserver?.unobserve(holder);
+      }
+    },
+    { root: scrollEl, rootMargin: "150% 0px" },
+  );
+
+  for (let index = 0; index < state.book.pages.length; index += 1) {
+    appendRowsForPage(index, columnWidth);
+  }
+};
+
+/** Total height of the rows belonging to one page. */
+const pageBlockHeight = (index) => {
+  let top = null;
+  let bottom = 0;
+  for (const holder of scrollEl.children) {
+    if (Number(holder.dataset.index) !== index) continue;
+    if (top === null) top = holder.offsetTop;
+    bottom = holder.offsetTop + holder.offsetHeight;
+  }
+  return top === null ? 0 : bottom - top;
+};
+
+const rowTopForPage = (index) => {
+  for (const holder of scrollEl.children) {
+    if (Number(holder.dataset.index) >= index) return holder.offsetTop;
+  }
+  return 0;
+};
+
+/**
+ * Rebuild the column after panels arrive.
+ *
+ * Detection completes while the reader is looking at the column, so the position
+ * within the current page is preserved as a fraction of that page's height:
+ * rebuilding must not yank the reading position.
+ */
+const rebuildStripPreservingPosition = () => {
+  const anchor = state.spreadIndex;
+  const topBefore = rowTopForPage(anchor);
+  const heightBefore = pageBlockHeight(anchor);
+  const within = scrollEl.scrollTop - topBefore;
+  renderVertical();
+  const topAfter = rowTopForPage(anchor);
+  const heightAfter = pageBlockHeight(anchor);
+  if (heightBefore > 0 && heightAfter > 0 && within > 0) {
+    scrollEl.scrollTop = Math.max(0, topAfter + (within / heightBefore) * heightAfter);
+  }
+};
+
+/** Detect panels for a page from its URL, without needing it on screen. */
+const detectPanelsForUrl = (page) =>
+  new Promise((resolve) => {
+    const image = new Image();
+    image.addEventListener("load", () => {
+      try {
+        resolve(detectPanelsInElement(image, pageSize(page)));
+      } catch {
+        // A page that cannot be sampled is shown whole rather than failing.
+        state.stripSampleFailures += 1;
+        resolve(null);
+      }
+    });
+    image.addEventListener("error", () => {
+      state.stripSampleFailures += 1;
+      resolve(null);
+    });
+    image.src = page.url;
+  });
+
+let stripQueue = [];
+const stripPending = new Set();
+let stripInFlight = 0;
+
+/**
+ * Work through the pages near the reader, a couple at a time, so the column
+ * gains panels as it is read rather than blocking on the whole book.
+ */
+const pumpStripQueue = () => {
+  while (stripInFlight < 2 && stripQueue.length > 0) {
+    const index = stripQueue.shift();
+    stripInFlight += 1;
+    void detectPanelsForUrl(state.book.pages[index])
+      .then((panels) => {
+        const usable = Array.isArray(panels) && panelsFormStrip(panels, pageSize(state.book.pages[index]));
+        state.stripPanels.set(index, usable ? panels : null);
+      })
+      .catch(() => state.stripPanels.set(index, null))
+      .finally(() => {
+        stripInFlight -= 1;
+        stripPending.delete(index);
+        // The column's shape changed, so the next render must rebuild it.
+        state.stripVersion += 1;
+        if (verticalActive()) rebuildStripPreservingPosition();
+        if (stripQueue.length > 0) pumpStripQueue();
+      });
+  }
+};
+
+const scheduleStripDetection = () => {
+  if (!stripActive()) return;
+  const last = state.book.pages.length - 1;
+  for (const index of [state.spreadIndex, state.spreadIndex + 1, state.spreadIndex + 2]) {
+    if (index < 0 || index > last) continue;
+    // Only PDF pages carry a `kind`; an image book's pages do not.
+    if (state.book.pages[index].kind === "pdf") continue;
+    if (state.stripPanels.has(index) || stripPending.has(index)) continue;
+    stripPending.add(index);
+    stripQueue.push(index);
+  }
+  pumpStripQueue();
 };
 
 /** Render the PDF pages around the reader, and clear the rest. */
@@ -1499,43 +1716,33 @@ const renderVertical = () => {
   }
   scrollEl.hidden = false;
   const columnWidth = verticalColumnWidth();
-  if (scrollEl.childElementCount !== state.book.pages.length) {
-    clearVertical();
-    for (const [index, page] of state.book.pages.entries()) {
-      const holder = document.createElement("div");
-      holder.className = "scroll-page";
-      holder.dataset.index = String(index);
-      let element;
-      if (page.kind === "pdf") {
-        element = document.createElement("canvas");
-        element.className = "page-canvas";
-      } else {
-        element = document.createElement("img");
-        element.src = page.url;
-        element.alt = page.name;
-        element.draggable = false;
-        // A long comic should not decode every page up front.
-        element.loading = "lazy";
-        element.decoding = "async";
-        if (state.preferences.resampling === "nearest") element.classList.add("pixelated");
-        element.addEventListener("load", () => learnDimensions(page, element));
-        element.addEventListener("error", () => toast(`Could not display ${page.name}`));
-      }
-      holder.append(element);
-      scrollEl.append(holder);
-    }
-    if (state.pdf !== null) renderVerticalPdfWindow(state.spreadIndex);
+  // Rebuilding preserves nothing on its own, so it only happens when the shape
+  // of the column actually changed.
+  const signature = `${columnWidth}:${state.stripVersion}:${state.book.pages.length}`;
+  if (scrollEl.dataset.signature !== signature) {
+    buildVerticalRows(columnWidth);
+    scrollEl.dataset.signature = signature;
+    // A rebuilt column starts at the top, which would leave the scroll position
+    // and the page the reader is on disagreeing — switching mode mid-book would
+    // silently jump back to page one.
+    scrollToVerticalPage(state.spreadIndex);
   }
   for (const holder of scrollEl.children) {
     const page = state.book.pages[Number(holder.dataset.index)];
     const base = pageSize(page);
-    const height = Math.round((base.height * columnWidth) / Math.max(1, base.width));
-    holder.style.width = `${columnWidth}px`;
-    holder.style.height = `${height}px`;
-    const element = holder.firstElementChild;
-    element.style.width = `${columnWidth}px`;
-    element.style.height = `${height}px`;
+    if (holder.dataset.panel === undefined) {
+      const height = Math.max(1, Math.round((base.height * columnWidth) / Math.max(1, base.width)));
+      holder.style.width = `${columnWidth}px`;
+      holder.style.height = `${height}px`;
+      const element = holder.firstElementChild;
+      if (element !== null && element.tagName === "CANVAS") {
+        element.style.width = `${columnWidth}px`;
+        element.style.height = `${height}px`;
+      }
+    }
   }
+  scheduleStripDetection();
+  if (state.pdf !== null) renderVerticalPdfWindow(state.spreadIndex);
 };
 
 /** Which page sits in the middle of the viewport. */
@@ -1550,9 +1757,12 @@ const verticalPageAtCentre = () => {
 };
 
 const scrollToVerticalPage = (index) => {
-  const holder = scrollEl.children[index];
-  if (holder === undefined) return;
-  scrollEl.scrollTop = holder.offsetTop;
+  for (const holder of scrollEl.children) {
+    if (Number(holder.dataset.index) >= index) {
+      scrollEl.scrollTop = holder.offsetTop;
+      return;
+    }
+  }
 };
 
 /* Chrome ------------------------------------------------------------------- */
@@ -2023,6 +2233,7 @@ const wireVerticalScroll = () => {
         if (index === state.spreadIndex) return;
         state.spreadIndex = index;
         renderVerticalPdfWindow(index);
+        scheduleStripDetection();
         updateStatus();
         updateThumbnailHighlight();
         reportProgress();

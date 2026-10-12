@@ -48,6 +48,8 @@ export const DEFAULT_PREFERENCES = {
   guidedSpotlight: true,
   /** Read as one continuous vertical column instead of page by page. */
   verticalScroll: false,
+  /** In vertical mode, stack the page's panels rather than whole pages. */
+  panelStrip: true,
   /** Brightness multiplier for the scan-enhancement stage. */
   brightness: 1,
   /** Contrast multiplier for the scan-enhancement stage. */
@@ -91,6 +93,7 @@ export const PREFERENCE_RULES = {
   guidedEasing: { type: "enum", values: ["linear", "ease-in", "ease-out", "ease-in-out"] },
   guidedSpotlight: { type: "boolean" },
   verticalScroll: { type: "boolean" },
+  panelStrip: { type: "boolean" },
   brightness: { type: "number", min: 0.5, max: 2 },
   contrast: { type: "number", min: 0.5, max: 2 },
   grayscale: { type: "number", min: 0, max: 1 },

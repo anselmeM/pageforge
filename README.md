@@ -17,7 +17,8 @@ Working today:
 - Page order is natural filename order (`page2` before `page10`)
 - Packaging noise is skipped: `__MACOSX/`, AppleDouble `._*`, `.DS_Store`, `Thumbs.db`
 - **Single page**, **double page**, and **vertical continuous scroll**; a wide page
-  gets a spread to itself
+  gets a spread to itself. The vertical column can be built from **detected panels**
+  rather than whole pages, which makes a comic legible on a wide or short window.
 - **Right-to-left** (Japanese) reading direction, which also mirrors the click zones
 - **Fit to screen / width / height** and **actual size**, plus zoom in/out with
   anchored zoom-at-cursor and pan clamped to the page
@@ -53,16 +54,38 @@ observed), and portable configuration.
 ## Reading a long comic
 
 `V` (or the **Scroll** button) reads the book as one continuous column instead of
-page by page: pages are laid out full width, loaded as they come into view, and the
+page by page: rows are laid out full width, loaded as they come into view, and the
 status bar follows the page under the middle of the screen, so resume, bookmarks and
 the thumbnail strip keep working. Zoom in and out with `+`/`-` widens or narrows the
 column rather than scaling a page.
 
-PDFs are drawn only for the two pages either side of the reader, so a long PDF does
-not render every page up front.
+**The column is built from panels, not pages.** Each page is run through the same
+panel detector guided view uses, and when the result is trustworthy the page
+becomes one row per panel, cropped to the panel and scaled to the column. That is
+what makes a comic legible in a wide or short window, where a whole page is
+unreadably small. The crop is background geometry on a single decoded page image,
+so no page is decoded twice and each panel costs one DOM row.
+
+A page whose detection is *not* trustworthy is shown whole, which matters more here
+than in guided view: a wrong split in a strip is a visible seam in the middle of
+someone's reading, rather than one more keypress. A page is rejected when it has
+fewer than two panels, more than 18 (fragmentation), panels covering under 40% of
+the page, or a panel thinner than 1:6 either way. On a real 41-page comic this
+correctly rejects the cover and stacks the 4 panels of an interior page.
+
+Turn it off with "Stack panels in the column" in Reading Quality.
+
+Detection runs a couple of pages at a time around the reader, so the column gains
+panels as it is read rather than blocking on the whole book, and a rebuild preserves
+the reading position as a fraction of the current page.
+
+PDFs are drawn only for the two pages either side of the reader, and are shown whole
+rather than stacked, because cropping a PDF panel would mean a canvas per panel.
 
 Vertical scroll and guided view are mutually exclusive — they are two ways to read
-the same page — so switching one on switches the other off.
+the same page — so switching one on switches the other off. The strip is a different
+answer to the same problem as guided view: the camera owns the viewport in guided
+view, and the scrollbar owns it in the strip, and neither fights the other.
 
 ## Scan filters
 
@@ -333,7 +356,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 157 unit, store, colour, magnifier, panel, shortcut and reader tests
+npm test        # 165 unit, store, colour, magnifier, panel, shortcut and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
@@ -377,6 +400,7 @@ says what it does not know:
 | Guided view with automatic panel detection | **Not from CDisplayEx**, which has no guided view. Independently implemented from the well-known gutter-splitting technique; no code taken from any other project. |
 | Detection is heuristic and tuned for panel grids | **Chosen**; covers and splash pages are shown whole or split oddly, and that is stated rather than hidden |
 | Vertical scroll, scan filters, progress, per-book layout | **Not from CDisplayEx**; brought in as *ideas* only, implemented independently. The source that suggested them carries no licence, so no code was taken from it. |
+| Panel strip (panels stacked in the column) | **Chosen over** putting a guided-view camera inside a scrolling column. Two things would then be positioning the same pixels, and they would fight; the strip removes the camera instead. |
 | Books keyed by absolute path rather than by content digest | **Chosen** limitation; a moved or renamed book is treated as new |
 | Automatic colour correction, gamma, colour boost, scaling quality, page cache | **Observed** options in CDisplayEx's catalog ("Automatic color correction", "Gamma", "Vibrance", "Lanczos (better quality)", "Linear", "Nearest (faster)", "Cache pages") |
 | Colour boost implemented as a saturation matrix | **Chosen approximation**; a linear colour matrix cannot express perceptual vibrance |
