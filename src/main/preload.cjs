@@ -15,8 +15,12 @@ contextBridge.exposeInMainWorld("pageforge", {
 
   /** Preferences, recent books, and this book's bookmarks. */
   getLibrary: () => ipcRenderer.invoke("library:get"),
-  /** Record the reading position. Resolves false when nothing changed. */
-  setProgress: (targetPath, page) => ipcRenderer.invoke("library:progress", targetPath, page),
+  /** Record the reading position and the page turn it represents. */
+  setProgress: (targetPath, page, total) => ipcRenderer.invoke("library:progress", targetPath, page, total),
+  /** Every achievement with its progress. */
+  getAchievements: () => ipcRenderer.invoke("achievements:get"),
+  /** Start the achievements over, leaving reading history alone. */
+  resetAchievements: () => ipcRenderer.invoke("achievements:reset"),
   /** Add a named bookmark for a page. */
   addBookmark: (targetPath, page, name) => ipcRenderer.invoke("library:bookmark:add", targetPath, page, name),
   /** Remove a bookmark by id. */
@@ -67,7 +71,14 @@ contextBridge.exposeInMainWorld("pageforge", {
   },
   /** Subscribe to a main-process push. Returns an unsubscribe function. */
   on: (channel, handler) => {
-    const allowed = ["app:book-opened", "app:book-failed", "app:fullscreen", "app:preferences", "app:open-progress"];
+    const allowed = [
+      "app:book-opened",
+      "app:book-failed",
+      "app:fullscreen",
+      "app:preferences",
+      "app:open-progress",
+      "app:achievement",
+    ];
     if (!allowed.includes(channel)) throw new Error(`Unsupported channel: ${channel}`);
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on(channel, listener);

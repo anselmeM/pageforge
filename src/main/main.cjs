@@ -444,6 +444,7 @@ const buildMenu = (preferences) =>
       submenu: [
         { label: "Add Bookmark…", accelerator: "CmdOrCtrl+B", click: () => send("app:command", "add-bookmark") },
         { label: "Bookmarks…", accelerator: "CmdOrCtrl+Shift+B", click: () => send("app:command", "show-bookmarks") },
+        { label: "Achievements…", click: () => send("app:command", "show-achievements") },
         { type: "separator" },
         { label: "Recent Books…", accelerator: "CmdOrCtrl+R", click: () => send("app:command", "show-recent") },
         { type: "separator" },
@@ -726,9 +727,20 @@ const registerIpc = () => {
     const reporter = await currentCrashReporter();
     return { enabled: reporter.enabled, endpoint: reporter.endpoint };
   });
-  ipcMain.handle("library:progress", async (_event, targetPath, page) => {
+  ipcMain.handle("library:progress", async (_event, targetPath, page, total) => {
     const store = await ensureLibrary();
-    return store.recordProgress(targetPath, page);
+    const result = await store.recordReading({ targetPath, page, total });
+    // Announced from here so the unlock happens exactly once, wherever it came from.
+    for (const achievement of result.unlocked) send("app:achievement", achievement);
+    return result.changed;
+  });
+  ipcMain.handle("achievements:get", async () => {
+    const store = await ensureLibrary();
+    return store.achievementSummary();
+  });
+  ipcMain.handle("achievements:reset", async () => {
+    const store = await ensureLibrary();
+    return store.resetAchievements();
   });
   ipcMain.handle("library:bookmark:add", async (_event, targetPath, page, name) => {
     const store = await ensureLibrary();

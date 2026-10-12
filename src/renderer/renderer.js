@@ -594,7 +594,13 @@ const reportReady = async () => {
     startPage: (spread?.indices[0] ?? 0) + 1,
     bookmarkCount: state.bookmarks.length,
     historyCount: state.history.length,
-    thumbnails: thumbnailsEl.hidden ? 0 : thumbnailsEl.querySelectorAll(".thumb").length,
+    thumbnails: thumbnailsEl.hidden ? 0 : mountedThumbs.size,
+    thumbnailPages: state.book?.pages.length ?? 0,
+    // Mounted thumbnails that have their preview, so a virtualised strip cannot
+    // silently stop filling the ones it keeps.
+    thumbnailsFilled: [...mountedThumbs.values()].filter(
+      (button) => button.firstElementChild?.tagName === "IMG" || button.firstElementChild?.tagName === "CANVAS",
+    ).length,
     // Reading-quality facts, so the colour and scaling paths are assertable.
     colorMode: state.preferences.colorMode,
     colorGains: { ...state.colorGains },
@@ -618,6 +624,18 @@ const reportReady = async () => {
     indexCache: state.book?.indexCache ?? null,
     openMs: state.book?.openMs ?? null,
     crashReport: lastCrashReportResult,
+    // Read from the store, not from the dialog: the report must not depend on
+    // whether anyone opened it.
+    achievements: await api
+      .getAchievements()
+      .then((summary) => ({
+        earned: summary.entries.filter((entry) => entry.unlockedAt !== null).length,
+        total: summary.entries.length,
+        pagesTurned: summary.measures.pagesTurned,
+        booksFinished: summary.measures.booksFinished,
+        currentStreak: summary.measures.currentStreak,
+      }))
+      .catch(() => null),
     firstPageName: state.book?.pages?.[0]?.name ?? null,
     lastPageName: state.book?.pages?.[state.book.pages.length - 1]?.name ?? null,
     rightToLeft: state.rightToLeft === true,
@@ -807,13 +825,11 @@ const reportProgress = () => {
   const page = spread.indices[0] + 1;
   if (page === lastReportedPage) return;
   lastReportedPage = page;
-  api.setProgress(state.book.targetPath, page).catch(() => {
+  api.setProgress(state.book.targetPath, page, state.book.pages.length).catch(() => {
     // Allow a retry on the next navigation if this one did not reach the store.
     if (lastReportedPage === page) lastReportedPage = -1;
   });
 };
-
-let thumbnailObserver = null;
 
 const fillThumbnail = async (button) => {
   const index = Number(button.dataset.page);
@@ -837,50 +853,121 @@ const fillThumbnail = async (button) => {
   button.replaceChildren(image);
 };
 
+/**
+ * The thumbnail strip mounts only the thumbnails near the visible window.
+ *
+ * A page per element is fine for a thirty-page book and wrong for a thousand-page
+ * one: every thumbnail would be a node with an image, laid out and painted even
+ * though almost none of them can be seen. The rail takes the full scroll width so
+ * the scrollbar still means the whole book, and the window slides as it scrolls.
+ */
+const THUMB_WIDTH = 74;
+const THUMB_GAP = 6;
+const THUMB_SLOT = THUMB_WIDTH + THUMB_GAP;
+/** Thumbnails kept mounted either side of the visible window. */
+const THUMB_OVERSCAN = 4;
+
+let thumbRail = null;
+/** Mounted thumbnails, by page index. */
+const mountedThumbs = new Map();
+
+const thumbRange = () => {
+  const count = state.book?.pages.length ?? 0;
+  if (count === 0) return { first: 0, last: -1 };
+  const first = Math.max(0, Math.floor(thumbnailsEl.scrollLeft / THUMB_SLOT) - THUMB_OVERSCAN);
+  const last = Math.min(
+    count - 1,
+    Math.ceil((thumbnailsEl.scrollLeft + thumbnailsEl.clientWidth) / THUMB_SLOT) + THUMB_OVERSCAN,
+  );
+  return { first, last };
+};
+
+const mountThumb = (index) => {
+  const page = state.book.pages[index];
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "thumb";
+  button.dataset.page = String(index);
+  button.title = `${index + 1} · ${page.name}`;
+  button.style.left = `${index * THUMB_SLOT}px`;
+  button.addEventListener("click", () => goToPage(index + 1));
+  const number = document.createElement("span");
+  number.className = "thumb-number";
+  number.textContent = String(index + 1);
+  button.append(number);
+  // Mounted means close to visible, so the preview can be fetched straight away.
+  void fillThumbnail(button);
+  thumbRail.append(button);
+  mountedThumbs.set(index, button);
+  return button;
+};
+
+const syncThumbnails = () => {
+  if (state.thumbnailsVisible !== true || state.book === null || thumbRail === null) return;
+  const { first, last } = thumbRange();
+  for (const [index, button] of mountedThumbs) {
+    if (index < first || index > last) {
+      button.remove();
+      mountedThumbs.delete(index);
+    }
+  }
+  for (let index = first; index <= last; index += 1) {
+    if (!mountedThumbs.has(index)) mountThumb(index);
+  }
+};
+
 const buildThumbnails = () => {
-  thumbnailObserver?.disconnect();
-  thumbnailObserver = null;
   thumbnailsEl.replaceChildren();
+  mountedThumbs.clear();
+  thumbRail = null;
   if (!state.thumbnailsVisible || state.book === null) return;
 
-  thumbnailObserver = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        if (!entry.isIntersecting) continue;
-        thumbnailObserver.unobserve(entry.target);
-        void fillThumbnail(entry.target);
-      }
-    },
-    { root: thumbnailsEl, rootMargin: "300px" },
-  );
-
-  const fragment = document.createDocumentFragment();
-  state.book.pages.forEach((page, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "thumb";
-    button.dataset.page = String(index);
-    button.title = `${index + 1} · ${page.name}`;
-    button.addEventListener("click", () => goToPage(index + 1));
-    const number = document.createElement("span");
-    number.className = "thumb-number";
-    number.textContent = String(index + 1);
-    button.append(number);
-    fragment.append(button);
-  });
-  thumbnailsEl.append(fragment);
-  for (const button of thumbnailsEl.querySelectorAll(".thumb")) thumbnailObserver.observe(button);
+  const count = state.book.pages.length;
+  thumbRail = document.createElement("div");
+  thumbRail.id = "thumb-rail";
+  // The last thumbnail needs no trailing gap.
+  thumbRail.style.width = `${Math.max(0, count * THUMB_SLOT - THUMB_GAP)}px`;
+  thumbnailsEl.append(thumbRail);
+  syncThumbnails();
   updateThumbnailHighlight();
 };
 
+/** Scroll the strip just far enough to show a page. */
+const revealThumbnail = (index) => {
+  const left = index * THUMB_SLOT;
+  const right = left + THUMB_WIDTH;
+  const viewLeft = thumbnailsEl.scrollLeft;
+  const viewRight = viewLeft + thumbnailsEl.clientWidth;
+  if (left < viewLeft) thumbnailsEl.scrollLeft = left;
+  else if (right > viewRight) thumbnailsEl.scrollLeft = right - thumbnailsEl.clientWidth;
+};
+
 const updateThumbnailHighlight = () => {
-  if (state.thumbnailsVisible !== true) return;
+  if (state.thumbnailsVisible !== true || state.book === null) return;
   const active = new Set(currentSpread()?.indices ?? []);
-  for (const button of thumbnailsEl.querySelectorAll(".thumb")) {
-    const isCurrent = active.has(Number(button.dataset.page));
-    button.classList.toggle("current", isCurrent);
-    if (isCurrent) button.scrollIntoView({ block: "nearest", inline: "nearest" });
+  const first = Math.min(...active);
+  // The current page may not be mounted yet, so bring it into view first.
+  if (Number.isFinite(first)) revealThumbnail(first);
+  syncThumbnails();
+  for (const [index, button] of mountedThumbs) {
+    button.classList.toggle("current", active.has(index));
   }
+};
+
+let thumbnailScrollScheduled = false;
+const wireThumbnailScroll = () => {
+  thumbnailsEl.addEventListener(
+    "scroll",
+    () => {
+      if (thumbnailScrollScheduled) return;
+      thumbnailScrollScheduled = true;
+      requestAnimationFrame(() => {
+        thumbnailScrollScheduled = false;
+        syncThumbnails();
+      });
+    },
+    { passive: true },
+  );
 };
 
 const renderBookmarkList = () => {
@@ -1878,6 +1965,49 @@ const sendTestCrashReport = async () => {
   }
 };
 
+/* Achievements ------------------------------------------------------------- */
+
+const achievementsDialog = document.getElementById("achievements-dialog");
+const achievementList = document.getElementById("achievement-list");
+
+const renderAchievementList = (summary) => {
+  achievementList.replaceChildren();
+  const earned = summary.entries.filter((entry) => entry.unlockedAt !== null).length;
+  document.getElementById("achievements-summary").textContent =
+    `${earned} of ${summary.entries.length} earned · ${summary.measures.pagesTurned} pages turned · ` +
+    `${summary.measures.booksFinished} finished · ${summary.measures.currentStreak} day streak`;
+  for (const entry of summary.entries) {
+    const item = document.createElement("li");
+    item.className = entry.unlockedAt === null ? "achievement locked" : "achievement earned";
+    const title = document.createElement("strong");
+    title.textContent = entry.unlockedAt === null ? entry.title : `★ ${entry.title}`;
+    const description = document.createElement("span");
+    description.className = "meta";
+    // Progress rather than a bare locked state: "40 of 100 pages" is a goal.
+    description.textContent =
+      entry.unlockedAt === null
+        ? ` — ${entry.description} (${entry.progress} of ${entry.goal})`
+        : ` — ${entry.description}`;
+    item.append(title, description);
+    achievementList.append(item);
+  }
+};
+
+const openAchievementsDialog = async () => {
+  try {
+    renderAchievementList(await api.getAchievements());
+  } catch {
+    toast("Achievements could not be read");
+    return;
+  }
+  achievementsDialog.showModal();
+};
+
+const announceAchievement = (achievement) => {
+  if (achievement === null || achievement === undefined) return;
+  toast(`Achievement unlocked — ${achievement.title}`);
+};
+
 /* Chrome ------------------------------------------------------------------- */
 
 const openingEl = document.getElementById("opening");
@@ -2126,6 +2256,9 @@ const runCommand = async (command) => {
     case "add-bookmark":
       void openBookmarksDialog();
       return;
+    case "show-achievements":
+      await openAchievementsDialog();
+      return;
     case "show-bookmarks":
       void openBookmarksDialog();
       return;
@@ -2294,6 +2427,16 @@ const wireDialogs = () => {
   });
   document.getElementById("bookmarks-close").addEventListener("click", () => bookmarksDialog.close());
   document.getElementById("recent-close").addEventListener("click", () => recentDialog.close());
+  document.getElementById("achievements-close").addEventListener("click", () => achievementsDialog.close());
+  document.getElementById("achievements-reset").addEventListener("click", async () => {
+    await api.resetAchievements();
+    try {
+      renderAchievementList(await api.getAchievements());
+    } catch {
+      /* the dialog simply keeps what it showed */
+    }
+    toast("Achievements reset");
+  });
   document.getElementById("recent-clear").addEventListener("click", async () => {
     await api.clearHistory();
     await refreshLibrary();
@@ -2383,6 +2526,7 @@ const init = async () => {
   wireResize();
   wireVerticalScroll();
   wireResumeBanner();
+  wireThumbnailScroll();
 
   api.onCommand(runCommand);
   api.on("app:book-opened", (book) => applyBookSafely(book));
@@ -2390,6 +2534,7 @@ const init = async () => {
     toast(error.message);
     api.reportError(error);
   });
+  api.on("app:achievement", (achievement) => announceAchievement(achievement));
   api.on("app:open-progress", (progress) => showOpening(progress));
   api.on("app:fullscreen", (value) => {
     const wasFullscreen = state.fullscreen;

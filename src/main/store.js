@@ -23,6 +23,13 @@ import {
   pruneBookmarks,
   upsertHistory,
 } from "../core/library.js";
+import {
+  achievementSummary as buildAchievementSummary,
+  evaluateAchievements,
+  localDayKey,
+  normalizeAchievementState,
+  recordActivity as foldActivity,
+} from "../core/achievements.js";
 import { DEFAULT_SHORTCUTS, REBINDABLE_COMMANDS, normalizeShortcuts, withShortcut } from "../core/shortcuts.js";
 
 const FILE_NAME = "library.json";
@@ -34,6 +41,7 @@ const emptyLibrary = () => ({
   history: [],
   bookmarks: {},
   bookSettings: {},
+  achievements: normalizeAchievementState(null),
 });
 
 /** Accept only the shapes this module writes; anything else falls back. */
@@ -70,6 +78,7 @@ const sanitize = (value) => {
       if (Object.keys(normalized).length > 0) library.bookSettings[pathKey] = normalized;
     }
   }
+  library.achievements = normalizeAchievementState(value.achievements);
   return library;
 };
 
@@ -111,6 +120,17 @@ export const createStore = async ({ directory }) => {
   };
 
   const entryFor = (pathKey) => library.history.find((item) => item.pathKey === pathKey);
+
+  /** Update the stored position in memory, without writing. Returns whether it moved. */
+  const applyProgress = (targetPath, page) => {
+    const pathKey = normalizePathKey(targetPath);
+    const entry = entryFor(pathKey);
+    if (entry === undefined || !Number.isInteger(page) || page < 1) return false;
+    if (entry.lastPage === page) return false;
+    entry.lastPage = page;
+    entry.readAt = new Date().toISOString();
+    return true;
+  };
 
   return {
     loadProblem,
@@ -158,14 +178,9 @@ export const createStore = async ({ directory }) => {
 
     /** Record reading position. The page is clamped when the book is reopened. */
     async recordProgress(targetPath, page) {
-      const pathKey = normalizePathKey(targetPath);
-      const entry = entryFor(pathKey);
-      if (entry === undefined || !Number.isInteger(page) || page < 1) return false;
-      if (entry.lastPage === page) return false;
-      entry.lastPage = page;
-      entry.readAt = new Date().toISOString();
-      await persist();
-      return true;
+      const changed = applyProgress(targetPath, page);
+      if (changed) await persist();
+      return changed;
     },
 
     /**
@@ -186,6 +201,50 @@ export const createStore = async ({ directory }) => {
       else library.bookSettings[pathKey] = merged;
       await persist();
       return { ...merged };
+    },
+
+    /**
+     * Record a page turn and fold it into the achievements, in one write.
+     *
+     * The two belong together: every page turn is what the achievements are made
+     * of, so persisting them separately would mean two atomic rewrites of the
+     * same file for every page the reader turns.
+     *
+     * @returns {{changed: boolean, unlocked: Array<{id: string, title: string, description: string}>}}
+     */
+    async recordReading({ targetPath, page, total = 0, at = new Date().toISOString() }) {
+      const changed = applyProgress(targetPath, page);
+      const next = foldActivity(library.achievements, {
+        pathKey: normalizePathKey(targetPath),
+        page,
+        total,
+        dayKey: localDayKey(new Date(at)),
+        hour: new Date(at).getHours(),
+        at,
+      });
+      const evaluated = evaluateAchievements(next, {
+        distinctBooks: library.history.length,
+        todayKey: localDayKey(new Date(at)),
+        at,
+      });
+      library.achievements = evaluated.state;
+      await persist();
+      return { changed, unlocked: evaluated.unlockedNow };
+    },
+
+    /** Everything the achievements dialog needs. */
+    achievementSummary() {
+      return buildAchievementSummary(library.achievements, {
+        distinctBooks: library.history.length,
+        todayKey: localDayKey(new Date()),
+      });
+    },
+
+    /** Start the achievements over. Reading history is left alone. */
+    async resetAchievements() {
+      library.achievements = normalizeAchievementState(null);
+      await persist();
+      return true;
     },
 
     async addBookmark(targetPath, page, name) {

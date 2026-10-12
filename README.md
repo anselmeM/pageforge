@@ -36,7 +36,9 @@ Working today:
 - **Layout is remembered per book**: reading mode, direction, fit and rotation are
   stored against the book, so a manga volume opens right-to-left whatever the last
   book was. Turn it off with "Remember layout per book".
-- **Thumbnail strip** with lazy per-page previews that jumps to any page
+- **Thumbnail strip** with lazy per-page previews that jumps to any page. Only the
+  thumbnails near the visible window are mounted, so a 240-page book is 21 elements
+  rather than 240.
 - **Colour correction** (off, estimated per page, or manual gamma and colour boost)
 - **Scan filters**: brightness, contrast, grayscale, sepia and unsharp sharpening,
   for making a poor scan readable
@@ -54,6 +56,9 @@ Working today:
 - **Opt-in crash reporting** (off by default): a crash on your machine is one you
   can debug; a crash on someone else's is invisible. Nothing is ever sent until
   reporting is switched on and a destination is set.
+- **Achievements**, derived from your own reading on this machine: pages turned,
+  books finished, days in a row, reading in the small hours. Unlocks are announced
+  as they happen, and the list shows real progress towards the ones not yet earned.
 
 Not implemented, each for a stated reason: CBT/TAR archives and DjVu (format work
 not yet done), a true Lanczos kernel and perceptual vibrance (the settings say what
@@ -156,6 +161,41 @@ real app against a local server and asserts the URL, the auth header, the event
 body, and the absence of the account name — but a local server implementing the
 documented contract is *not* Sentry's own service. Verifying against Sentry needs a
 DSN and an account, which is exactly what the test button exists for.
+
+## The thumbnail strip
+
+A page per element is fine for a thirty-page book and wrong for a thousand-page one:
+every thumbnail would be a node with an image, laid out and painted even though
+almost none of them can be seen. The strip keeps a rail of the full scroll width —
+so the scrollbar still means the whole book — and mounts only the thumbnails near
+the visible window, recycling them as it scrolls. A 240-page book mounts 21
+elements. Mounted means close to visible, so a mounted thumbnail fetches its preview
+straight away instead of waiting for an observer.
+
+## Achievements
+
+Ten of them, earned from what you read on this machine: pages turned, books
+finished, ten books finished, a 100-page book finished, ten different books opened,
+three and seven days in a row, and reading between midnight and 4am. Unlocks are
+announced when they happen, and the list shows real progress towards the ones not
+yet earned (`5 of 100`), because a bare locked state is not a goal.
+
+Details that matter more than they look:
+
+- **Nothing is sent anywhere.** They are computed from the local library. The dialog
+  says so, because a reader is entitled to know.
+- **A book counts as finished once**, however many times you reach the last page, so
+  the count cannot be inflated by re-reading.
+- **Day boundaries are local, and day arithmetic goes through UTC**, so a
+  daylight-saving change cannot make a streak skip or double a day. A run that ended
+  yesterday is still current — it should not break at midnight before you have had a
+  chance to read.
+- **The clock is passed in, not read.** A module that reads the clock can only be
+  tested by waiting, and streaks are exactly what needs testing. A test also proves
+  every achievement is reachable, so a threshold no amount of reading can meet would
+  fail the suite.
+- Reading history and achievements are independent: clearing history does not wipe
+  them, and the dialog has its own Reset.
 
 ## Continuous integration
 
@@ -469,7 +509,7 @@ Two decisions worth knowing:
 ## Tests
 
 ```sh
-npm test        # 219 unit, store, colour, magnifier, panel, ComicInfo, cache, crash-report and reader tests
+npm test        # 246 unit, store, colour, magnifier, panel, ComicInfo, cache, crash-report, achievement and reader tests
 npm run smoke   # launches Electron against every format fixture, then proves
                 # resume, bookmarks, white balance, scaling, the magnifier,
                 # the slideshow and key rebinding
@@ -518,6 +558,7 @@ says what it does not know:
 | Archive index storage | **`node:sqlite`**, the runtime's built-in SQLite, rather than a native module. Electron 44 bundles Node 24, so there is no rebuild step and nothing to unpack from the asar. It is marked experimental upstream, so it sits behind a wrapper that disables the cache rather than failing an open. |
 | Crash reporting transport | **Sentry's documented ingest contract over `fetch`**, not the Sentry SDK. Reporting is opt-in and may never be used, so it does not justify a permanent dependency; the cost is no breadcrumbs, sessions or source maps. |
 | Crash reporting default | **Off**, and it cannot send without a destination. An app that phones home by default would make the "local, offline" promise false. |
+| Achievements | **Local only, and honest.** Derived from what you read here, never uploaded, counted once per finished book, with day arithmetic that survives daylight saving. Included because they were asked for; they are not forced on a reader who ignores them. |
 | Books keyed by absolute path rather than by content digest | **Chosen** limitation; a moved or renamed book is treated as new |
 | Automatic colour correction, gamma, colour boost, scaling quality, page cache | **Observed** options in CDisplayEx's catalog ("Automatic color correction", "Gamma", "Vibrance", "Lanczos (better quality)", "Linear", "Nearest (faster)", "Cache pages") |
 | Colour boost implemented as a saturation matrix | **Chosen approximation**; a linear colour matrix cannot express perceptual vibrance |

@@ -409,11 +409,24 @@ export const writeFixture = async (directory) => {
     zipBytes([{ name: "page01.png", data: panelledPngBytes(400, 600) }]),
   );
 
+  // Many pages, so the thumbnail strip has something to virtualise: a page per
+  // element would be 240 nodes, and only a window of them should ever exist.
+  const many = join(directory, "many.cbz");
+  await writeFile(
+    many,
+    zipBytes(
+      Array.from({ length: 240 }, (_, index) => ({
+        name: `page${String(index + 1).padStart(3, "0")}.png`,
+        data: pngBytes(24, 36, [(index * 7) % 256, (index * 13) % 256, (index * 29) % 256]),
+      })),
+    ),
+  );
+
   const rarBytesResult = await rarBytes(FIXTURE_ENTRIES);
   const rar = rarBytesResult === null ? null : join(directory, "sample.cbr");
   if (rar !== null) await writeFile(rar, rarBytesResult);
 
-  return { archive, folder: join(directory, "folder"), sevenZip, rar, pdf, cast, detail, panels, manga };
+  return { archive, folder: join(directory, "folder"), sevenZip, rar, pdf, cast, detail, panels, manga, many };
 };
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

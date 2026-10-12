@@ -302,6 +302,79 @@ try {
     }
   }
 
+  // The thumbnail strip must mount a window, not a page per element: a 240-page
+  // book should not be 240 nodes with an image each.
+  {
+    const reportFile = join(workspace, "report-thumbnails.json");
+    const result = await run(
+      ["--smoke", `--report=${reportFile}`, "--command=toggle-thumbnails", fixture.many],
+      envFor("thumbnails"),
+    );
+    let report = null;
+    try {
+      report = JSON.parse(await readFile(reportFile, "utf8"));
+    } catch {
+      report = parseReport(result.stdout);
+    }
+    try {
+      if (report === null) {
+        throw new Error(`no report (exit=${result.code})\n${result.stdout}\n${result.stderr}`);
+      }
+      assert.equal(report.smoke, "ok", `app reported ${JSON.stringify(report)}`);
+      assert.equal(report.thumbnailPages, 240, "the book has 240 pages");
+      assert.ok(report.thumbnails > 0, "some thumbnails are mounted");
+      assert.ok(
+        report.thumbnails < 60,
+        `240 pages mounted ${report.thumbnails} thumbnails; the strip is not virtualising`,
+      );
+      assert.equal(
+        report.thumbnailsFilled,
+        report.thumbnails,
+        "every mounted thumbnail should have its preview",
+      );
+      process.stdout.write(
+        `verify-dist: thumbnails OK — ${report.thumbnails} of ${report.thumbnailPages} pages mounted\n`,
+      );
+    } catch (error) {
+      failures.push(`thumbnails: ${error.message}`);
+    }
+  }
+
+  // Page turns must be counted, and finishing a book recorded once.
+  {
+    const reportFile = join(workspace, "report-achievements.json");
+    const result = await run(
+      [
+        "--smoke",
+        `--report=${reportFile}`,
+        "--command=next-page,next-page,next-page",
+        fixture.archive,
+      ],
+      envFor("achievements"),
+    );
+    let report = null;
+    try {
+      report = JSON.parse(await readFile(reportFile, "utf8"));
+    } catch {
+      report = parseReport(result.stdout);
+    }
+    try {
+      if (report === null) {
+        throw new Error(`no report (exit=${result.code})\n${result.stdout}\n${result.stderr}`);
+      }
+      assert.equal(report.smoke, "ok", `app reported ${JSON.stringify(report)}`);
+      assert.equal(report.achievements?.pagesTurned, 3, "three page turns were made");
+      assert.equal(report.achievements?.booksFinished, 1, "the four-page book was finished");
+      assert.ok((report.achievements?.earned ?? 0) >= 2, "First Page and Finisher were earned");
+      process.stdout.write(
+        `verify-dist: achievements OK — ${report.achievements.earned} earned, ` +
+          `${report.achievements.pagesTurned} pages turned\n`,
+      );
+    } catch (error) {
+      failures.push(`achievements: ${error.message}`);
+    }
+  }
+
   // The capture path exercises the full render pipeline, not just the loader.
   const screenshot = join(workspace, "packaged.png");
   const captured = await run([`--capture=${screenshot}`, fixture.archive], envFor("capture"));

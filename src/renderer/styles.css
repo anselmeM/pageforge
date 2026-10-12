@@ -36,9 +36,23 @@ body {
 
 /* Thumbnail strip ---------------------------------------------------------- */
 
+/* Achievements ------------------------------------------------------------- */
+
+.achievement {
+  margin: 2px 0;
+}
+
+.achievement.earned strong {
+  color: var(--accent);
+}
+
+.achievement.locked {
+  opacity: 0.62;
+}
+
 #thumbnails {
-  display: flex;
-  gap: 6px;
+  display: block;
+  position: relative;
   overflow-x: auto;
   overflow-y: hidden;
   padding: 6px 8px;
@@ -51,8 +65,16 @@ body {
   display: none;
 }
 
+/* The rail carries the full scroll width while only a window of thumbnails is
+   mounted, so a thousand-page book is not a thousand elements. */
+#thumb-rail {
+  position: relative;
+  height: 104px;
+}
+
 #thumbnails .thumb {
-  flex: 0 0 auto;
+  position: absolute;
+  top: 0;
   width: 74px;
   height: 104px;
   padding: 0;
