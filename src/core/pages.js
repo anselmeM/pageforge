@@ -6,7 +6,7 @@
 import { compareNatural } from "./naturalSort.js";
 
 /** Extensions this reader treats as page images. */
-export const IMAGE_EXTENSIONS = new Set([
+const IMAGE_EXTENSIONS = new Set([
   ".jpg",
   ".jpeg",
   ".jpe",
@@ -33,7 +33,7 @@ const isPackagingNoise = (name) =>
   );
 
 /** True for entries that name a directory rather than a file. */
-export const isDirectoryEntry = (name) => /[\\/]$/u.test(name);
+const isDirectoryEntry = (name) => /[\\/]$/u.test(name);
 
 /** Lower-case extension including the dot, or an empty string when there is none. */
 export const extensionOf = (name) => {

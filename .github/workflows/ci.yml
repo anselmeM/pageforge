@@ -121,3 +121,8 @@ jobs:
           name: PageForge-portable
           path: release/*.exe
           if-no-files-found: error
+          # Debugging aid for a failed run, not a distribution channel: the
+          # executable is 108 MB and every push to master builds one. The default
+          # is ninety days, which accumulates gigabytes of builds nobody downloads.
+          # Releases are attached to a tag, where they stay for good.
+          retention-days: 7

@@ -10,7 +10,7 @@
 
 /** Thumbnail box, gap and the resulting slot pitch, in CSS pixels. */
 export const THUMB_WIDTH = 74;
-export const THUMB_GAP = 6;
+const THUMB_GAP = 6;
 export const THUMB_SLOT = THUMB_WIDTH + THUMB_GAP;
 /** How many thumbnails to keep mounted either side of the visible window. */
 export const THUMB_OVERSCAN = 4;

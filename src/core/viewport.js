@@ -44,6 +44,3 @@ export const zoomAtPoint = (scale, offset, nextScale, pointer) => {
     y: settle(pointer.y - (pointer.y - offset.y) * ratio),
   };
 };
-
-/** Centre a page of the given scaled size, applying an optional reading offset. */
-export const centreOffset = () => ({ x: 0, y: 0 });

@@ -360,7 +360,7 @@ export const panelsAreUsable = (panels, page) => {
 };
 
 /** Limits for presenting a page as a set of panels. */
-export const PANEL_LIMITS = {
+const PANEL_LIMITS = {
   /** More panels than this on one page usually means the page was cut to pieces. */
   maxPanels: 18,
   /** Panels must cover at least this much of the page to be worth stepping through. */
@@ -368,9 +368,6 @@ export const PANEL_LIMITS = {
   /** Panels thinner than this (either way) are slices, not panels. */
   maxAspect: 6,
 };
-
-/** Kept for the older name; both modes now share one rule. */
-export const panelsFormStrip = panelsAreUsable;
 
 /**
  * One row per panel, as CSS background-crop geometry at a given column width.
@@ -380,7 +377,7 @@ export const panelsFormStrip = panelsAreUsable;
  * background size and offset. Returns null when the page should be shown whole.
  */
 export const panelStripRows = ({ panels, page, columnWidth }) => {
-  if (!panelsFormStrip(panels, page)) return null;
+  if (!panelsAreUsable(panels, page)) return null;
   const width = Math.max(1, Math.round(columnWidth));
   return panels.map((panel) => {
     const scale = width / Math.max(1, panel.width);

@@ -19,7 +19,6 @@ import {
   panelStripRows,
   panelVariance,
   panelsAreUsable,
-  panelsFormStrip,
   sortPanels,
 } from "../src/core/panels.js";
 
@@ -255,11 +254,11 @@ describe("panel strip", () => {
   ];
 
   it("is worth stacking only for a plausible multi-panel page", () => {
-    assert.equal(panelsFormStrip(grid, page400), true);
-    assert.equal(panelsFormStrip([], page400), false);
-    assert.equal(panelsFormStrip(null, page400), false);
+    assert.equal(panelsAreUsable(grid, page400), true);
+    assert.equal(panelsAreUsable([], page400), false);
+    assert.equal(panelsAreUsable(null, page400), false);
     // A splash page is one panel covering everything: shown whole, not stacked.
-    assert.equal(panelsFormStrip([{ x: 0, y: 0, width: 400, height: 600 }], page400), false);
+    assert.equal(panelsAreUsable([{ x: 0, y: 0, width: 400, height: 600 }], page400), false);
   });
 
   it("refuses a page whose detected panels are small and scattered", () => {
@@ -271,7 +270,7 @@ describe("panel strip", () => {
       width: 60,
       height: 60,
     }));
-    assert.equal(panelsFormStrip(fragments, page400), false, "coverage is under 20%");
+    assert.equal(panelsAreUsable(fragments, page400), false, "coverage is under 20%");
   });
 
   it("refuses a page cut into more pieces than a page plausibly has", () => {
@@ -281,7 +280,7 @@ describe("panel strip", () => {
       width: 80,
       height: 80,
     }));
-    assert.equal(panelsFormStrip(many, page400), false, "20 panels is fragmentation");
+    assert.equal(panelsAreUsable(many, page400), false, "20 panels is fragmentation");
   });
 
   it("refuses panels that cover too little of the page", () => {
@@ -289,12 +288,12 @@ describe("panel strip", () => {
       { x: 0, y: 0, width: 100, height: 100 },
       { x: 200, y: 0, width: 100, height: 100 },
     ];
-    assert.equal(panelsFormStrip(sparse, page400), false, "coverage is 8% of the page");
+    assert.equal(panelsAreUsable(sparse, page400), false, "coverage is 8% of the page");
   });
 
   it("refuses a slice, which is a gutter artefact rather than a panel", () => {
     const withSlice = [...grid, { x: 0, y: 590, width: 400, height: 8 }];
-    assert.equal(panelsFormStrip(withSlice, page400), false);
+    assert.equal(panelsAreUsable(withSlice, page400), false);
   });
 
   it("gives one row per panel, cropping the page by background geometry", () => {
@@ -409,10 +408,6 @@ describe("whether a page is worth guiding or stacking", () => {
     assert.equal(panelsAreUsable([grid[0]], page400), false);
     assert.equal(panelsAreUsable([], page400), false);
     assert.equal(panelsAreUsable(null, page400), false);
-  });
-
-  it("is the same rule guided view and the strip both use", () => {
-    assert.equal(panelsFormStrip, panelsAreUsable);
   });
 });
 

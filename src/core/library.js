@@ -139,7 +139,7 @@ export const coercePreference = (key, value) => coerceWithRule(PREFERENCE_RULES[
  * Layout the reader remembers *per book* rather than globally: a manga volume
  * should open right-to-left whatever the last book was.
  */
-export const BOOK_SETTING_RULES = {
+const BOOK_SETTING_RULES = {
   doublePage: { type: "boolean" },
   rightToLeft: { type: "boolean" },
   guidedView: { type: "boolean" },
@@ -166,11 +166,11 @@ export const pruneBookSettings = (bookSettings, history) => {
 };
 
 /** The shape this file writes, so an import can be recognised rather than guessed at. */
-export const EXPORT_FORMAT = "pageforge-library";
-export const EXPORT_VERSION = 1;
+const EXPORT_FORMAT = "pageforge-library";
+const EXPORT_VERSION = 1;
 
 /** One history entry, keeping only what makes sense and never throwing. */
-export const normalizeHistoryEntry = (value) => {
+const normalizeHistoryEntry = (value) => {
   if (value === null || typeof value !== "object") return null;
   if (typeof value.pathKey !== "string" || value.pathKey.length === 0) return null;
   const page = Number.isInteger(value.lastPage) && value.lastPage >= 1 ? value.lastPage : 1;

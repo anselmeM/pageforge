@@ -7,12 +7,9 @@
  * without starting a window.
  */
 
-/** Selectable fit strategies. */
-export const FIT_MODES = ["screen", "width", "height", "original"];
-
 /** Zoom limits, expressed as a multiplier over the page's natural pixel size. */
-export const MIN_ZOOM = 0.05;
-export const MAX_ZOOM = 8;
+const MIN_ZOOM = 0.05;
+const MAX_ZOOM = 8;
 
 /**
  * Scale that fits `content` into `viewport` for the given mode.
