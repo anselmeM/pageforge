@@ -17,6 +17,7 @@ const { readFile, stat, writeFile } = require("node:fs/promises");
 const { basename, extname, isAbsolute, join, relative, resolve } = require("node:path");
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, protocol } = require("electron");
+const { describeFlags, unknownFlags } = require("./flags.cjs");
 
 // When ELECTRON_RUN_AS_NODE is inherited, electron.exe runs as plain Node: the
 // electron module resolves to the npm shim and every member below is undefined.
@@ -217,6 +218,22 @@ const currentCrashReporter = async () => {
 
 /** Path of whatever is open, for per-book lookups. */
 const currentTargetPath = () => session?.targetPath ?? documentPath;
+
+/**
+ * Say so when a flag is not one this application handles.
+ *
+ * These are still passed through to Electron and Chromium, which have switches of
+ * their own, so this warns rather than exits. The point is that a documented flag
+ * that does not exist -- which happened, and went unnoticed -- is visible the first
+ * time someone types it instead of being ignored in silence.
+ */
+const unrecognisedFlags = unknownFlags(process.argv.slice(1));
+if (unrecognisedFlags.length > 0) {
+  process.stderr.write(
+    `PageForge: unrecognised flag ${unrecognisedFlags.join(", ")}. ` +
+      `Passed through to Electron and otherwise ignored. Accepted: ${describeFlags()}\n`,
+  );
+}
 
 const isSmokeRun = process.argv.includes("--smoke");
 let smokeReported = false;
