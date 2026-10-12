@@ -93,7 +93,7 @@ credential verification are **not** covered. Do not assume they are.
 
 | Command | Runs |
 |---|---|
-| `npm test` | 322 unit tests. Pure logic, no Electron, no browser. |
+| `npm test` | 321 unit tests. Pure logic, no Electron, no browser. |
 | `npm run smoke` | The real app against generated fixtures, every format. |
 | `npm run verify` | Tests, workflow parsing, smoke, crash reporting. |
 | `npm run verify:dist` | The *packaged* executable, after `npm run dist`. |

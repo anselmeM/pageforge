@@ -35,7 +35,7 @@ app with a portable executable as the deliverable.
 
 | Command | What it does |
 |---|---|
-| `npm test` | 315 unit tests. No Electron, no window — fast, and never flaky. |
+| `npm test` | 321 unit tests. No Electron, no window — fast, and never flaky. |
 | `npm run smoke` | Launches the real app against generated fixtures, every format. |
 | `npm run verify` | `test` + `verify:workflows` + `smoke` + `verify:crash`. |
 | `npm run dist` | Builds the portable executable. **The app must be closed first** — the exe is locked while it runs, and `scripts/ensure-not-running.mjs` fails fast with that reason. |
